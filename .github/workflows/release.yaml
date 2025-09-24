@@ -9,25 +9,25 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write 
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v3
         with:
           node-version: 22
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Build (Webpack)
+      - name: Compile (webpack)
         run: npm run compile
 
       - name: Package VS Code Extension
-        run: npx @vscode/vsce package
+        run: npx vsce package
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
@@ -41,3 +41,8 @@ jobs:
           files: "*.vsix"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to VS Code Marketplace
+        run: npx vsce publish -p $VSCE_PAT
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
