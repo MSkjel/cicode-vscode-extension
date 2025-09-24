@@ -1,0 +1,90 @@
+{
+  "name": "Cicode",
+  "scopeName": "source.cicode",
+  "fileTypes": ["ci"],
+  "patterns": [
+    {
+      "begin": "\\b(?i:(if|while|for|case|repeat|try))\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.cicode" }
+      },
+      "end": "\\b(?i:end)\\b",
+      "endCaptures": {
+        "0": { "name": "keyword.control.cicode" }
+      },
+      "patterns": [
+        { "include": "$self" }
+      ],
+      "name": "meta.block.control.cicode"
+    },
+    {
+      "begin": "\\b(?i:function)\\b\\s+(\\w+)\\s*\\(",
+      "beginCaptures": {
+        "0": { "name": "storage.type.function.cicode" },
+        "1": { "name": "entity.name.function.cicode" }
+      },
+      "end": "\\b(?i:end)\\b",
+      "endCaptures": {
+        "0": { "name": "storage.type.function.cicode" }
+      },
+      "patterns": [
+        { "include": "$self" }
+      ],
+      "name": "meta.function.cicode"
+    },
+    {
+      "match": "\\b(?i:(then|else|do|until|goto|break|continue|exit|abort|raise|return|except|finally))\\b",
+      "name": "keyword.control.cicode"
+    },
+    {
+      "match": "\\b(?i:(and|or|xor|not|div|mod|shl|shr|bitand|bitor))\\b",
+      "name": "keyword.operator.cicode"
+    },
+    {
+      "match": "\\b(?i:(module|global))\\b",
+      "name": "storage.modifier.cicode"
+    },
+    {
+      "match": "\\b(?i:(function))\\b\\s+(\\w+)\\s*\\(",
+      "captures": {
+        "1": { "name": "storage.type.function.cicode" },
+        "2": { "name": "entity.name.function.prototype.cicode" }
+      },
+      "name": "meta.function.prototype.cicode"
+    },
+    {
+      "match": "\\b([A-Za-z_]\\w*)\\s*\\(",
+      "captures": {
+        "1": { "name": "entity.name.function.call.cicode" }
+      },
+      "name": "meta.function-call.cicode"
+    },
+    {
+      "match": "\\b(?i:(int|real|long|ulong|string|object|module|quality|timestamp))\\b",
+      "name": "storage.type.cicode"
+    },
+    {
+      "match": "\\b0[xX][0-9a-fA-F]{1,16}\\b",
+      "name": "constant.numeric.hex.cicode"
+    },
+    {
+      "match": "\\b(\\d+)|(\\d*\\.\\d+([eE][\\-+]?\\d+)?)\\b",
+      "name": "constant.numeric.cicode"
+    },
+    {
+      "match": "\\b(?i:(true|false))\\b",
+      "name": "constant.language.cicode"
+    },
+    {
+      "begin": "(^[ \\t]+)?(?=//)",
+      "end": "(?!\\G)",
+      "patterns": [
+        {
+          "begin": "//",
+          "end": "\\n",
+          "name": "comment.line.double-slash.cicode"
+        }
+      ]
+    }
+  ]
+}

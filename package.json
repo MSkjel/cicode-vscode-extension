@@ -1,0 +1,65 @@
+{
+  "name": "cicode-vscode-extension",
+  "displayName": "Cicode Syntax Highlighting",
+  "description": "Syntax highlighting and navigation for Cicode",
+  "version": "0.0.1",
+  "publisher": "MSkjel",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MSkjel/cicode-vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onWorkspaceSymbol"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "cicode",
+        "aliases": [
+          "Cicode",
+          "cicode"
+        ],
+        "extensions": [
+          ".ci"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "cicode",
+        "scopeName": "source.cicode",
+        "path": "./syntaxes/cicode.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "cicode.rebuildBuiltins",
+        "title": "Cicode: Rebuild Builtin Functions"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+    "dependencies": {
+    "cheerio": "^1.1.2"
+  },
+  "devDependencies": {
+    "vsce": "^2.15.0",
+    "ts-loader": "^9.5.4",
+    "webpack": "^5.101.3",
+    "webpack-cli": "^6.0.1"
+  }
+}

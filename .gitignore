@@ -1,0 +1,29 @@
+# Node modules
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# VS Code extension build output (recompiled in CI/CD)
+out/
+dist/
+*.vsix
+
+# Logs
+logs/
+*.log
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Env files
+.env
+.env.local
+.env.*.local
+
+# Build cache
+.cache/
+*.tsbuildinfo
+
+# VS Code project settings
+.vscode/*

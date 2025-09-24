@@ -1,0 +1,16 @@
+# Exclude development sources
+src/
+node_modules/
+out/
+cache/
+logs/
+
+# Exclude config and build files
+.gitignore
+.vscode/
+webpack.config.js
+tsconfig.json
+package-lock.json
+README.md
+LICENSE
+.github/
