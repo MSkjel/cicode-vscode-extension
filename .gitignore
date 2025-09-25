@@ -27,3 +27,4 @@ Thumbs.db
 
 # VS Code project settings
 .vscode/*
+!.vscode/launch.json
