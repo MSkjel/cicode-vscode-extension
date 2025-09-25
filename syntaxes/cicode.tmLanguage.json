@@ -1,39 +1,42 @@
 {
   "name": "Cicode",
   "scopeName": "source.cicode",
-  "fileTypes": ["ci"],
+  "fileTypes": [
+    "ci"
+  ],
   "patterns": [
     {
-      "begin": "\\b(?i:(if|while|for|case|repeat|try))\\b",
+      "begin": "(?i)^\\s*(?:(int|real|long|ulong|string|object|module|quality|timestamp)\\s+)?function\\b(?:\\s+(\\w+))?",
       "beginCaptures": {
-        "1": { "name": "keyword.control.cicode" }
+        "1": {
+          "name": "storage.type.cicode"
+        },
+        "2": {
+          "name": "entity.name.function.cicode"
+        },
+        "0": {
+          "name": "keyword.declaration.function.cicode"
+        }
       },
-      "end": "\\b(?i:end)\\b",
+      "end": "(?i)^end\\b",
       "endCaptures": {
-        "0": { "name": "keyword.control.cicode" }
+        "0": {
+          "name": "keyword.declaration.function.cicode"
+        }
       },
+      "applyEndPatternLast": true,
       "patterns": [
-        { "include": "$self" }
-      ],
-      "name": "meta.block.control.cicode"
-    },
-    {
-      "begin": "\\b(?i:function)\\b\\s+(\\w+)\\s*\\(",
-      "beginCaptures": {
-        "0": { "name": "storage.type.function.cicode" },
-        "1": { "name": "entity.name.function.cicode" }
-      },
-      "end": "\\b(?i:end)\\b",
-      "endCaptures": {
-        "0": { "name": "storage.type.function.cicode" }
-      },
-      "patterns": [
-        { "include": "$self" }
+        {
+          "include": "#controlBlocks"
+        },
+        {
+          "include": "$self"
+        }
       ],
       "name": "meta.function.cicode"
     },
     {
-      "match": "\\b(?i:(then|else|do|until|goto|break|continue|exit|abort|raise|return|except|finally))\\b",
+      "match": "\\b(?i:(then|else|do|to|until|goto|break|continue|exit|abort|raise|return|except|finally))\\b",
       "name": "keyword.control.cicode"
     },
     {
@@ -45,22 +48,16 @@
       "name": "storage.modifier.cicode"
     },
     {
-      "match": "\\b(?i:(function))\\b\\s+(\\w+)\\s*\\(",
-      "captures": {
-        "1": { "name": "storage.type.function.cicode" },
-        "2": { "name": "entity.name.function.prototype.cicode" }
-      },
-      "name": "meta.function.prototype.cicode"
-    },
-    {
       "match": "\\b([A-Za-z_]\\w*)\\s*\\(",
       "captures": {
-        "1": { "name": "entity.name.function.call.cicode" }
+        "1": {
+          "name": "entity.name.function.call.cicode"
+        }
       },
       "name": "meta.function-call.cicode"
     },
     {
-      "match": "\\b(?i:(int|real|long|ulong|string|object|module|quality|timestamp))\\b",
+      "match": "\\b(?i:(boolean|int|real|long|ulong|string|object|module|quality|timestamp))\\b",
       "name": "storage.type.cicode"
     },
     {
@@ -76,15 +73,143 @@
       "name": "constant.language.cicode"
     },
     {
-      "begin": "(^[ \\t]+)?(?=//)",
-      "end": "(?!\\G)",
+      "begin": "(//|!)",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.cicode"
+        }
+      },
+      "end": "$",
+      "name": "comment.line.cicode"
+    },
+    {
+      "begin": "/\\*",
+      "end": "\\*/",
+      "name": "comment.block.cicode"
+    },
+    {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.cicode",
       "patterns": [
         {
-          "begin": "//",
-          "end": "\\n",
-          "name": "comment.line.double-slash.cicode"
+          "match": "\\^.",
+          "name": "constant.character.escape.cicode"
+        }
+      ]
+    },
+    {
+      "begin": "'",
+      "end": "'",
+      "name": "string.quoted.single.cicode",
+      "patterns": [
+        {
+          "match": "\\^.",
+          "name": "constant.character.escape.cicode"
         }
       ]
     }
-  ]
+  ],
+  "repository": {
+    "controlBlocks": {
+      "patterns": [
+        {
+          "begin": "\\b(?i:if)\\b",
+          "beginCaptures": {
+            "0": {
+              "name": "keyword.control.cicode"
+            }
+          },
+          "end": "(?i)^\\s*end\\b",
+          "endCaptures": {
+            "0": {
+              "name": "keyword.control.cicode"
+            }
+          },
+          "applyEndPatternLast": true,
+          "patterns": [
+            {
+              "include": "#controlBlocks"
+            },
+            {
+              "include": "$self"
+            }
+          ],
+          "name": "meta.block.if.cicode"
+        },
+        {
+          "begin": "\\b(?i:for)\\b",
+          "beginCaptures": {
+            "0": {
+              "name": "keyword.control.cicode"
+            }
+          },
+          "end": "(?i)^\\s*end\\b",
+          "endCaptures": {
+            "0": {
+              "name": "keyword.control.cicode"
+            }
+          },
+          "applyEndPatternLast": true,
+          "patterns": [
+            {
+              "include": "#controlBlocks"
+            },
+            {
+              "include": "$self"
+            }
+          ],
+          "name": "meta.block.for.cicode"
+        },
+        {
+          "begin": "\\b(?i:while)\\b",
+          "beginCaptures": {
+            "0": {
+              "name": "keyword.control.cicode"
+            }
+          },
+          "end": "(?i)^\\s*end\\b",
+          "endCaptures": {
+            "0": {
+              "name": "keyword.control.cicode"
+            }
+          },
+          "applyEndPatternLast": true,
+          "patterns": [
+            {
+              "include": "#controlBlocks"
+            },
+            {
+              "include": "$self"
+            }
+          ],
+          "name": "meta.block.while.cicode"
+        },
+        {
+          "begin": "\\b(?i:(case|repeat|try))\\b",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.cicode"
+            }
+          },
+          "end": "(?i)^\\s*end\\b",
+          "endCaptures": {
+            "0": {
+              "name": "keyword.control.cicode"
+            }
+          },
+          "applyEndPatternLast": true,
+          "patterns": [
+            {
+              "include": "#controlBlocks"
+            },
+            {
+              "include": "$self"
+            }
+          ],
+          "name": "meta.block.control.cicode"
+        }
+      ]
+    }
+  }
 }
