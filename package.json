@@ -2,7 +2,7 @@
   "name": "cicode-vscode-extension",
   "displayName": "Cicode Syntax Highlighting",
   "description": "Syntax highlighting and navigation for Cicode",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "MSkjel",
   "repository": {
     "type": "git",
@@ -43,8 +43,94 @@
       {
         "command": "cicode.rebuildBuiltins",
         "title": "Cicode: Rebuild Builtin Functions"
+      },
+      {
+        "command": "cicode.reindexAll",
+        "title": "Cicode: Reindex All Files"
+      },
+      {
+        "command": "cicode.openHelpForSymbol",
+        "title": "Cicode: Open Help for Symbol"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Cicode",
+      "properties": {
+        "cicode.indexing.excludeGlobs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**"
+          ],
+          "description": "Glob patterns to exclude from indexing."
+        },
+        "cicode.builtins.path": {
+          "type": "string",
+          "default": "",
+          "description": "Optional override path to builtins help HTML folder."
+        },
+        "cicode.hover.showHelpLink": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show 'Open full help' link in hovers for builtins."
+        },
+        "cicode.diagnostics.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable basic diagnostics (undefined functions, duplicates)."
+        },
+        "cicode.format.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the simple Cicode formatter."
+        },
+        "cicode.format.convertTabs": {
+          "type": "boolean",
+          "default": false,
+          "description": "Convert leading tabs to 4 spaces (outside parentheses only)."
+        },
+        "cicode.format.maxConsecutiveBlankLines": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Collapse multiple blank lines to this maximum (outside parentheses only)."
+        },
+        "cicode.lint.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable light lint diagnostics for common best practices."
+        },
+        "cicode.lint.maxLineLength": {
+          "type": "number",
+          "default": 140,
+          "minimum": 0,
+          "description": "Warn when lines exceed this length (0 = disable)."
+        },
+        "cicode.lint.warnTabs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn on tabs used for indentation."
+        },
+        "cicode.lint.warnMixedIndent": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn on mixing tabs and spaces at line starts."
+        },
+        "cicode.lint.warnMissingSemicolons": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn (info) when type declarations lack a trailing semicolon."
+        },
+        "cicode.lint.warnKeywordCase": {
+          "type": "boolean",
+          "default": false,
+          "description": "Suggest UPPERCASE keywords/END/IF/etc. Does not auto-fix."
+        }
+      }
+    }
   },
   "scripts": {
     "compile": "webpack",
@@ -53,7 +139,7 @@
     "package": "vsce package",
     "publish": "vsce publish"
   },
-    "dependencies": {
+  "dependencies": {
     "cheerio": "^1.1.2"
   },
   "devDependencies": {
