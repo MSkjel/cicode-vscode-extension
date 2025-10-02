@@ -1,14 +1,10 @@
-// webpack.config.js
-//@ts-check
-"use strict";
-
 const path = require("path");
 
 /** @type {import('webpack').Configuration} */
 module.exports = {
-  target: "node", // VS Code runs in Node
+  target: "node",
   mode: "production",
-  entry: "./src/extension.ts", // <-- point to TS entry
+  entry: "./src/extension.ts",
   output: {
     path: path.resolve(__dirname, "dist"),
     filename: "extension.js",
@@ -16,11 +12,10 @@ module.exports = {
     devtoolModuleFilenameTemplate: "../[resource-path]",
   },
   externals: {
-    // VS Code API is provided at runtime; don't bundle it
     vscode: "commonjs vscode",
   },
   resolve: {
-    extensions: [".ts", ".js"], // <-- resolve TS too
+    extensions: [".ts", ".js"],
   },
   module: {
     rules: [{ test: /\.ts$/, exclude: /node_modules/, use: "ts-loader" }],
