@@ -1,0 +1,17 @@
+export const KEYWORDS_WITH_PAREN = new Set([
+  "IF",
+  "WHILE",
+  "FOR",
+  "RETURN",
+  "REPEAT",
+  "UNTIL",
+  "DO",
+  "THEN",
+  "ELSE",
+  "SELECT",
+  "CASE",
+  "TRY",
+  "EXCEPT",
+  "FINALLY",
+  "END",
+]);

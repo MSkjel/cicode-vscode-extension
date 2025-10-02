@@ -1,9 +1,7 @@
 {
   "name": "Cicode",
   "scopeName": "source.cicode",
-  "fileTypes": [
-    "ci"
-  ],
+  "fileTypes": ["ci"],
   "patterns": [
     {
       "begin": "(?i)^\\s*(?:(int|real|long|ulong|string|object|module|quality|timestamp)\\s+)?function\\b(?:\\s+(\\w+))?",
@@ -44,7 +42,7 @@
       "name": "keyword.operator.cicode"
     },
     {
-      "match": "\\b(?i:(module|global|private|const))\\b",
+      "match": "\\b(?i:(module|global|private|public|const))\\b",
       "name": "storage.modifier.cicode"
     },
     {
@@ -57,7 +55,7 @@
       "name": "meta.function-call.cicode"
     },
     {
-      "match": "\\b(?i:(boolean|int|real|long|ulong|string|object|module|quality|timestamp))\\b",
+      "match": "\\b(?i:(boolean|int|real|void|long|ulong|string|object|module|quality|timestamp))\\b",
       "name": "storage.type.cicode"
     },
     {
