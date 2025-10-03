@@ -2,7 +2,7 @@
   "name": "cicode-vscode-extension",
   "displayName": "Cicode Syntax Highlighting",
   "description": "Syntax highlighting and navigation for Cicode",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "publisher": "MSkjel",
   "repository": {
     "type": "git",
@@ -51,6 +51,17 @@
       {
         "command": "cicode.openHelpForSymbol",
         "title": "Cicode: Open Help for Symbol"
+      },
+      {
+        "command": "cicode.insertDocSkeleton",
+        "title": "Cicode: Insert Doc Skeleton for Function"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "cicode.insertDocSkeleton",
+        "key": "ctrl+alt+d",
+        "when": "editorLangId == cicode && editorTextFocus"
       }
     ],
     "configuration": {
@@ -145,6 +156,7 @@
   "devDependencies": {
     "@types/node": "^20.14.10",
     "@types/vscode": "^1.88.0",
+    "prettier": "^3.6.2",
     "ts-loader": "^9.5.4",
     "typescript": "^5.4.5",
     "vsce": "^2.15.0",

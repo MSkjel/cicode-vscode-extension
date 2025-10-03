@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../core/indexer/indexer";
 import { rebuildBuiltins } from "../core/builtins/builtins";
+import { insertDocSkeletonAtCursor } from "./docSkeleton";
 
 export function registerCommands(
   context: vscode.ExtensionContext,
@@ -52,6 +53,14 @@ export function registerCommands(
         await vscode.env.openExternal(uri);
       },
     ),
+  );
+
+  cmds.push(
+    vscode.commands.registerCommand("cicode.insertDocSkeleton", async () => {
+      const ok = await insertDocSkeletonAtCursor(indexer);
+      if (ok)
+        vscode.window.showInformationMessage("Cicode: Inserted doc skeleton.");
+    }),
   );
 
   context.subscriptions.push(...cmds);
