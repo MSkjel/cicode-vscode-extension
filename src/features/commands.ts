@@ -30,6 +30,7 @@ export function registerCommands(
       async (symbol?: string) => {
         const editor = vscode.window.activeTextEditor;
         if (!symbol && !editor) return;
+
         const name =
           symbol ||
           editor!.document.getText(
@@ -38,11 +39,17 @@ export function registerCommands(
               /\w+/,
             ),
           );
+
         const f = indexer.getAllFunctions().get(name.toLowerCase());
         const helpPath = (f as any)?.helpPath as string | undefined;
-        if (helpPath) vscode.env.openExternal(vscode.Uri.file(helpPath));
-        else
+
+        if (!helpPath) {
           vscode.window.showInformationMessage(`No help page for '${name}'.`);
+          return;
+        }
+
+        const uri = vscode.Uri.file(helpPath);
+        await vscode.env.openExternal(uri);
       },
     ),
   );

@@ -14,4 +14,6 @@ export const KEYWORDS_WITH_PAREN = new Set([
   "EXCEPT",
   "FINALLY",
   "END",
+  "AND",
+  "OR",
 ]);

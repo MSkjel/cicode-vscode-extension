@@ -6,7 +6,7 @@ import { BuiltinFunction } from "./types";
 
 let builtinCache: Map<string, BuiltinFunction> = new Map();
 const CACHE_FILE = "builtinFunctions.json";
-const CACHE_VERSION = 3;
+const CACHE_VERSION = 4;
 
 function asMap(
   obj: Record<string, BuiltinFunction> | undefined | null,
@@ -18,26 +18,126 @@ function asMap(
 
 export async function initBuiltins(
   context: vscode.ExtensionContext,
-  _cfg: () => vscode.WorkspaceConfiguration,
+  cfg: () => vscode.WorkspaceConfiguration,
 ): Promise<void> {
   const file = path.join(context.globalStorageUri.fsPath, CACHE_FILE);
-  try {
-    if (fs.existsSync(file)) {
+
+  const loadFromDisk = (): boolean => {
+    try {
+      if (!fs.existsSync(file)) return false;
       const data = JSON.parse(fs.readFileSync(file, "utf8"));
-      if (data.v === CACHE_VERSION) builtinCache = asMap(data.functions);
+      if (data?.v !== CACHE_VERSION || !data?.functions) return false;
+      builtinCache = asMap(data.functions as Record<string, BuiltinFunction>);
+      return builtinCache.size > 0;
+    } catch {
+      return false;
     }
-  } catch {}
-  if (builtinCache.size === 0) {
+  };
+
+  const loadFromShipped = (): boolean => {
     try {
       const packaged = context.asAbsolutePath(
         path.join("builtins", "builtinFunctions.json"),
       );
-      if (fs.existsSync(packaged)) {
-        const obj = JSON.parse(fs.readFileSync(packaged, "utf8"));
-        builtinCache = asMap(obj);
+      if (!fs.existsSync(packaged)) return false;
+      const obj = JSON.parse(fs.readFileSync(packaged, "utf8"));
+      const functions = (obj?.functions ?? obj) as
+        | Record<string, BuiltinFunction>
+        | undefined;
+      if (!functions) return false;
+      builtinCache = asMap(functions);
+      return builtinCache.size > 0;
+    } catch {
+      return false;
+    }
+  };
+
+  if (loadFromDisk()) return;
+
+  try {
+    await rebuildBuiltins(context, cfg);
+  } catch {}
+  if (loadFromDisk()) return;
+
+  loadFromShipped();
+}
+
+function squish(s: string): string {
+  return (s || "").replace(/\s+/g, " ").trim();
+}
+
+function extractSummary($: cheerio.CheerioAPI): string {
+  const meta = $('meta[name="description"]').attr("content");
+  if (meta && squish(meta)) return squish(meta);
+
+  const firstBody = $(".pBody").first().text();
+  return squish(firstBody);
+}
+
+function extractReturnType($: cheerio.CheerioAPI): string {
+  const retText = $("p.SubHeading:contains('Return Value')").next("p").text();
+  if (!retText) return "UNKNOWN";
+  const first = squish(retText).split(/\s+/)[0] || "";
+  return /^(INT|REAL|STRING|OBJECT|BOOL|BOOLEAN|LONG|ULONG|VOID)$/i.test(first)
+    ? first.toUpperCase()
+    : "UNKNOWN";
+}
+
+function extractReturnsDoc($: cheerio.CheerioAPI): string | undefined {
+  const node = $("p.SubHeading:contains('Return Value')").next("p");
+  const text = squish(node.text());
+  return text || undefined;
+}
+
+function extractParamDocs($: cheerio.CheerioAPI): Record<string, string> {
+  const paramDocs: Record<string, string> = {};
+  const add = (rawName: string | undefined, rawDesc: string | undefined) => {
+    const name = squish((rawName || "").replace(/[:：]\s*$/, ""));
+    const desc = squish(rawDesc || "");
+    if (!name || !desc) return;
+    if (!paramDocs[name]) paramDocs[name] = desc;
+  };
+
+  const $ps = $("p");
+
+  $ps.each((i, el) => {
+    const $p = $(el);
+
+    if ($p.hasClass("pArgBody")) {
+      const em = $p.find("em.cEmphasis, i").first();
+      if (em.length) {
+        const paramName = em.text();
+        let remainder = $p.text();
+        const label = new RegExp(
+          "^\\s*" + escapeRegex(em.text()) + "\\s*[:\\-–—]?\\s*",
+          "i",
+        );
+        remainder = squish(remainder.replace(label, ""));
+        add(paramName, remainder);
+        return;
       }
-    } catch {}
-  }
+    }
+
+    if ($p.hasClass("pBody")) {
+      const em = $p.find("em.cEmphasis, i").first();
+      if (em.length) {
+        const paramName = em.text();
+        const stripped = squish($p.text().replace(/[\s\S]*?\b:\s*/, ""));
+        if (stripped) {
+          add(paramName, stripped);
+        } else {
+          const next = $p.next("p");
+          if (next.length) add(paramName, next.text());
+        }
+      }
+    }
+  });
+
+  return paramDocs;
+}
+
+function escapeRegex(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export async function rebuildBuiltins(
@@ -49,11 +149,14 @@ export async function rebuildBuiltins(
   const inputDir =
     override ||
     "C:/Program Files (x86)/AVEVA Plant SCADA/Bin/Help/SCADA Help/Subsystems/CicodeReferenceCitectHTML/Content";
+
   const out: Record<string, BuiltinFunction> = {};
   if (!fs.existsSync(inputDir)) return save(context, out);
 
   for (const file of fs.readdirSync(inputDir)) {
-    if (!file.toLowerCase().endsWith(".htm")) continue;
+    const ext = path.extname(file).toLowerCase();
+    if (ext !== ".htm" && ext !== ".html") continue;
+
     try {
       const html = fs.readFileSync(path.join(inputDir, file), "utf8");
       const $ = cheerio.load(html);
@@ -66,39 +169,32 @@ export async function rebuildBuiltins(
 
       let params: string[] = [];
       const m = syntaxLine.match(/\((.*)\)/);
-      if (m)
+      if (m) {
         params = m[1]
           .split(",")
-          .map((p) => p.replace(/\s+/g, " ").trim())
+          .map((p) => squish(p.replace(/\s+/g, " ")))
           .filter(Boolean);
-
-      const desc =
-        $("meta[name=description]").attr("content") ||
-        $(".pBody").first().text().trim() ||
-        "";
-
-      let returnType = "UNKNOWN";
-      const ret = $("p.SubHeading:contains('Return Value')")
-        .next("p")
-        .text()
-        .trim();
-      if (ret) {
-        const first = ret.split(/\s+/)[0];
-        if (/^(INT|REAL|STRING|OBJECT|BOOL|BOOLEAN|LONG|ULONG)$/i.test(first))
-          returnType = first.toUpperCase();
       }
+
+      const summary = extractSummary($);
+      const returnsDoc = extractReturnsDoc($);
+      const returnType = extractReturnType($);
+      const paramDocs = extractParamDocs($);
 
       out[name.toLowerCase()] = {
         name,
         returnType,
         params,
-        doc: desc,
+        doc: summary,
+        returns: returnsDoc,
+        paramDocs,
         helpPath: path.join(inputDir, file),
       };
     } catch (e) {
       console.error("builtin parse fail", file, e);
     }
   }
+
   return save(context, out);
 }
 

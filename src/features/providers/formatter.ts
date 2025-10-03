@@ -4,7 +4,7 @@ export function makeFormatter(
   cfg: () => vscode.WorkspaceConfiguration,
 ): vscode.DocumentFormattingEditProvider {
   const OPENERS: RegExp[] = [
-    /^\s*(\w+\s+)?function\b/i,
+    /^\s*(?:\w+\s+)*function\b/i,
     /^\s*if\b/i,
     /^\s*for\b/i,
     /^\s*while\b/i,

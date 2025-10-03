@@ -3,5 +3,7 @@ export interface BuiltinFunction {
   returnType: string;
   params: string[];
   doc: string;
+  returns?: string;
+  paramDocs?: Record<string, string>;
   helpPath?: string;
 }

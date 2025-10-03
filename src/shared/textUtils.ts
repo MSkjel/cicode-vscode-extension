@@ -100,3 +100,141 @@ export function splitDeclNames(namesPart: string): string[] {
     .map((s) => s.replace(/\s*=\s*.+$/, ""))
     .filter(Boolean);
 }
+
+function normalizeDocText(s: string): string {
+  const lines = String(s).replace(/\r\n?/g, "\n").split("\n");
+
+  // Compute common indent across non-empty lines
+  let common = Infinity;
+  for (const L of lines) {
+    if (!L.trim()) continue;
+    const m = L.match(/^[ \t]*/)!;
+    common = Math.min(common, m ? m[0].replace(/\t/g, "    ").length : 0);
+  }
+  if (!isFinite(common)) common = 0;
+
+  // Strip indent and collapse spaces per line
+  const stripped = lines.map((L) => {
+    if (!L.trim()) return ""; // keep blank lines as paragraph separators
+    // Remove up to `common` worth of spaces/tabs from the left
+    let i = 0,
+      width = 0;
+    while (i < L.length && (L[i] === " " || L[i] === "\t") && width < common) {
+      width += L[i] === "\t" ? 4 : 1;
+      i++;
+    }
+    // Collapse runs of spaces to single
+    return L.slice(i)
+      .replace(/[ \t]{2,}/g, " ")
+      .trimEnd();
+  });
+
+  const out: string[] = [];
+  let buf: string[] = [];
+  const flush = () => {
+    if (buf.length) {
+      out.push(buf.join(" ").trim());
+      buf = [];
+    }
+  };
+  for (const L of stripped) {
+    if (L === "") flush();
+    else buf.push(L.trim());
+  }
+  flush();
+
+  return out.join("\n\n").trim();
+}
+
+export function extractLeadingTripleSlashDoc(
+  text: string,
+  headerStart: number,
+): string[] {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+
+  // Find the header line index from the absolute offset
+  let idx = 0,
+    off = 0;
+  while (idx < lines.length && off + lines[idx].length + 1 <= headerStart) {
+    off += lines[idx].length + 1; // + '\n'
+    idx++;
+  }
+  const headerLine = Math.max(0, Math.min(lines.length - 1, idx));
+
+  const isBlank = (s: string) => /^\s*$/.test(s);
+  const isTriple = (s: string) => /^\s*\/\/\//.test(s); // <-- no \b !
+
+  // Walk upward over blanks, then collect a contiguous doc block of /// lines
+  const out: string[] = [];
+  let i = headerLine - 1;
+
+  // skip trailing blanks just before the header
+  while (i >= 0 && isBlank(lines[i])) i--;
+
+  // require at least one triple-slash to start
+  if (i < 0 || !isTriple(lines[i])) return [];
+
+  // collect upward until a non-blank, non-/// line
+  const collected: number[] = [];
+  while (i >= 0 && (isTriple(lines[i]) || isBlank(lines[i]))) {
+    collected.push(i);
+    i--;
+  }
+  collected.reverse();
+
+  // keep only the triple-slash lines, but preserve single blank lines as paragraph breaks
+  let pendingBlank = false;
+  for (const k of collected) {
+    const L = lines[k];
+    if (isTriple(L)) {
+      if (pendingBlank && out.length && out[out.length - 1] !== "")
+        out.push("");
+      pendingBlank = false;
+      out.push(L.replace(/^\s*\/\/\/\s?/, ""));
+    } else if (isBlank(L)) {
+      pendingBlank = true;
+    }
+  }
+
+  while (out.length && out[0] === "") out.shift();
+  while (out.length && out[out.length - 1] === "") out.pop();
+
+  return out;
+}
+
+export function parseXmlDocLines(lines: string[]): {
+  summary: string;
+  paramDocs: Record<string, string>;
+  returns?: string;
+} {
+  const raw = lines.join("\n");
+
+  // <summary>...</summary>
+  let summary = "";
+  {
+    const m = /<summary>([\s\S]*?)<\/summary>/i.exec(raw);
+    const body = m ? m[1] : raw;
+    summary = normalizeDocText(body.replace(/<[^>]+>/g, ""));
+  }
+
+  // <param name="...">...</param>
+  const paramDocs: Record<string, string> = {};
+  {
+    const re = /<param\s+name\s*=\s*"(.*?)"\s*>([\s\S]*?)<\/param>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(raw))) {
+      const name = (m[1] || "").trim();
+      const body = (m[2] || "").replace(/<[^>]+>/g, "");
+      if (name) paramDocs[name] = normalizeDocText(body);
+    }
+  }
+
+  // <returns>...</returns>
+  let returns: string | undefined;
+  {
+    const m = /<returns>([\s\S]*?)<\/returns>/i.exec(raw);
+    if (m) returns = normalizeDocText(m[1].replace(/<[^>]+>/g, ""));
+  }
+  console.log(raw);
+  return { summary, paramDocs, returns };
+}

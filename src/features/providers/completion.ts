@@ -7,9 +7,8 @@ export function makeCompletion(
   return {
     provideCompletionItems(document, position) {
       const items: vscode.CompletionItem[] = [];
-
-      for (const [, f] of indexer.getAllFunctions()) {
-        const display = f.name;
+      for (const [key, f] of indexer.getAllFunctions()) {
+        const display = f.name || key;
         const signature = `${f.returnType} ${display}(${(f.params || []).join(", ")})`;
         const it = new vscode.CompletionItem(
           display,
@@ -17,8 +16,12 @@ export function makeCompletion(
         );
         it.insertText = display;
         it.detail = signature;
-        if (f.doc) it.documentation = new vscode.MarkdownString(f.doc);
-        it.sortText = `0_${display}`;
+
+        if (f.doc || f.returns) {
+          const md = new vscode.MarkdownString();
+          if (f.doc) md.appendMarkdown(f.doc);
+          it.documentation = md;
+        }
         items.push(it);
       }
 

@@ -5,6 +5,8 @@ import {
   splitDeclNames,
   buildIgnoreSpans,
   inSpan,
+  extractLeadingTripleSlashDoc,
+  parseXmlDocLines,
 } from "../../shared/textUtils";
 import { getBuiltins } from "../builtins/builtins";
 import type { FunctionInfo, VariableEntry } from "../../shared/types";
@@ -121,18 +123,20 @@ export class Indexer {
     const functions = this._extractFunctionsWithRanges(text, doc);
     this.functionRangesByFile.set(file, functions);
 
-    for (const f of functions) {
+    for (const f of functions as any[]) {
       const key = f.name.toLowerCase();
       const params = f.paramsRaw
         .split(",")
-        .map((p) => p.trim())
+        .map((p: string) => p.trim())
         .filter(Boolean);
       this.functionCache.set(key, {
         name: f.name,
         returnType: f.returnType || "VOID",
         params,
         location: f.location,
-        doc: "",
+        doc: f.docText || "",
+        returns: f.returnsDoc,
+        paramDocs: f.paramDocs,
         file,
         bodyRange: f.bodyRange,
       });
@@ -165,7 +169,10 @@ export class Indexer {
     text: string,
     doc: vscode.TextDocument,
   ): FunctionRange[] {
+    // Only ignore comments/strings; do not mark headers as ignored here.
     const ignoreCS = buildIgnoreSpans(text, { includeFunctionHeaders: false });
+
+    // capture any sequence of words before FUNCTION into group 2
     const regex = /(^|\n)\s*((?:\w+\s+)*)function\s+(\w+)\s*\(([^)]*)\)/gim;
     const headers: Array<{
       returnType: string;
@@ -174,12 +181,15 @@ export class Indexer {
       headerIndex: number;
       headerPos: vscode.Position;
       location: vscode.Location;
+      docText?: string;
+      paramDocs?: Record<string, string>;
+      returnsDoc?: string;
     }> = [];
 
     let m: RegExpExecArray | null;
     while ((m = regex.exec(text))) {
       const fullStart = m.index + (m[1] ? m[1].length : 0);
-      if (inSpan(fullStart, ignoreCS)) continue;
+      if (inSpan(fullStart, ignoreCS)) continue; // header inside comment/string
 
       const prefixes = (m[2] || "").trim().split(/\s+/).filter(Boolean);
       let returnType = "VOID";
@@ -198,6 +208,20 @@ export class Indexer {
       const startPos = doc.positionAt(nameOffset);
       const headerPos = doc.positionAt(headerStart);
       const loc = new vscode.Location(doc.uri, startPos);
+
+      let docText: string | undefined;
+      let paramDocs: Record<string, string> | undefined;
+      let returnsDoc: string | undefined;
+
+      const lines = extractLeadingTripleSlashDoc(text, headerStart);
+
+      if (lines.length) {
+        const parsed = parseXmlDocLines(lines);
+        docText = parsed.summary || undefined;
+        returnsDoc = parsed.returns || undefined;
+        if (Object.keys(parsed.paramDocs).length) paramDocs = parsed.paramDocs;
+      }
+
       headers.push({
         name,
         returnType,
@@ -205,6 +229,9 @@ export class Indexer {
         headerIndex: headerStart,
         headerPos,
         location: loc,
+        docText,
+        paramDocs,
+        returnsDoc,
       });
     }
 
@@ -223,7 +250,7 @@ export class Indexer {
           doc.positionAt(bodyStart),
           doc.positionAt(end),
         ),
-      });
+      } as unknown as FunctionRange);
     }
     return out;
   }
@@ -340,7 +367,7 @@ export class Indexer {
       scanDeclsInSlice(slice, start, "module", null);
     }
   }
-  
+
   getFunction(name: string) {
     return this.functionCache.get(name.toLowerCase());
   }

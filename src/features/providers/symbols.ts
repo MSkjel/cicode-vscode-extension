@@ -68,7 +68,7 @@ export function makeSymbols(indexer: Indexer, workspace = false) {
       _token: vscode.CancellationToken,
     ) {
       const text = document.getText();
-      const regex = /^(?!.*\/\/).*?(\w+)?\s*function\s+(\w+)\s*\(/gim;
+      const regex = /(^|\n)\s*(?:\w+\s+)*function\s+(\w+)\s*\(/gim;
       let m: RegExpExecArray | null;
       const syms: vscode.SymbolInformation[] = [];
 

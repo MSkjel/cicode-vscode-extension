@@ -13,16 +13,18 @@ import { makeFormatter } from "./formatter";
 export function registerProviders(
   context: vscode.ExtensionContext,
   indexer: Indexer,
-  cfg: () => vscode.WorkspaceConfiguration
+  cfg: () => vscode.WorkspaceConfiguration,
 ): vscode.Disposable[] {
   const lang = { language: "cicode" } as const;
   const disposables: vscode.Disposable[] = [];
 
   disposables.push(
-    vscode.languages.registerDocumentSymbolProvider(lang, makeSymbols(indexer))
+    vscode.languages.registerDocumentSymbolProvider(lang, makeSymbols(indexer)),
   );
   disposables.push(
-    vscode.languages.registerWorkspaceSymbolProvider(makeSymbols(indexer, true))
+    vscode.languages.registerWorkspaceSymbolProvider(
+      makeSymbols(indexer, true),
+    ),
   );
   disposables.push(...makeNavProviders(indexer));
   disposables.push(
@@ -30,22 +32,22 @@ export function registerProviders(
       lang,
       makeCompletion(indexer),
       ..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_".split(
-        ""
-      )
-    )
+        "",
+      ),
+    ),
   );
   disposables.push(makeDiagnostics(indexer, cfg));
   disposables.push(
-    vscode.languages.registerRenameProvider("cicode", makeRename(indexer))
+    vscode.languages.registerRenameProvider("cicode", makeRename(indexer)),
   );
   disposables.push(
     vscode.languages.registerFoldingRangeProvider(
       "cicode",
-      makeFolding(indexer)
-    )
+      makeFolding(indexer),
+    ),
   );
   disposables.push(
-    vscode.languages.registerInlayHintsProvider("cicode", makeInlay(indexer))
+    vscode.languages.registerInlayHintsProvider("cicode", makeInlay(indexer)),
   );
 
   // FIX: create semantic tokens provider ONCE and reuse its legend
@@ -54,15 +56,15 @@ export function registerProviders(
     vscode.languages.registerDocumentSemanticTokensProvider(
       lang,
       sem.provider,
-      sem.legend
-    )
+      sem.legend,
+    ),
   );
 
   disposables.push(
     vscode.languages.registerDocumentFormattingEditProvider(
       "cicode",
-      makeFormatter(cfg)
-    )
+      makeFormatter(cfg),
+    ),
   );
   return disposables;
 }
