@@ -1,3 +1,5 @@
+import * as vscode from "vscode";
+
 export const TYPE_RE =
   /^(INT|REAL|STRING|OBJECT|BOOL|BOOLEAN|LONG|ULONG|UNKNOWN|VOID)$/i;
 
@@ -243,6 +245,36 @@ export function cleanParamName(param?: string | null): string {
   p = p.replace(/\s+/g, " ").trim();
   const m = p.match(/^[A-Za-z_]\w*/);
   return m ? m[0] : p || "?";
+}
+
+export function leftWordRangeAt(
+  doc: vscode.TextDocument,
+  pos: vscode.Position,
+): vscode.Range | undefined {
+  const line = doc.lineAt(pos.line).text;
+  let s = pos.character;
+  const isWord = (ch: string) => /[A-Za-z0-9_]/.test(ch);
+  const isWordStart = (ch: string) => /[A-Za-z_]/.test(ch);
+  if (pos.character > 0 && isWord(line[pos.character - 1])) {
+    while (s > 0 && isWord(line[s - 1])) s--;
+    if (!isWordStart(line[s])) return undefined;
+    return new vscode.Range(pos.line, s, pos.line, pos.character);
+  }
+  return undefined;
+}
+
+export function wordRangeAt(
+  doc: vscode.TextDocument,
+  pos: vscode.Position,
+): vscode.Range | undefined {
+  const line = doc.lineAt(pos.line).text;
+  let s = pos.character,
+    e = pos.character;
+  const isWord = (ch: string) => /[A-Za-z_]/.test(ch);
+  while (s > 0 && isWord(line[s - 1])) s--;
+  while (e < line.length && /[A-Za-z0-9_]/.test(line[e])) e++;
+  if (s === e) return undefined;
+  return new vscode.Range(pos.line, s, pos.line, e);
 }
 
 export function argLooksNamed(argText: string): boolean {

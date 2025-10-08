@@ -63,6 +63,40 @@ export function registerCommands(
     }),
   );
 
+  cmds.push(
+    vscode.commands.registerCommand("cicode.addSpaceIfNeeded", async () => {
+      const ed = vscode.window.activeTextEditor;
+      if (!ed) return;
+
+      const doc = ed.document;
+      const isStopper = (ch: string) =>
+        ch === " " ||
+        ch === ";" ||
+        ch === "," ||
+        ch === ")" ||
+        ch === "]" ||
+        ch === "}" ||
+        ch === "\t";
+      const isIdent = (ch: string) => /[A-Za-z0-9_]/.test(ch);
+
+      await ed.edit((eb) => {
+        for (const sel of ed.selections) {
+          const pos = sel.active;
+          if (!sel.isEmpty) continue;
+
+          const lineText = doc.lineAt(pos.line).text;
+          const nextCh =
+            pos.character < lineText.length ? lineText[pos.character] : "";
+          const prevCh = pos.character > 0 ? lineText[pos.character - 1] : "";
+          if (isStopper(nextCh) || prevCh === " ") continue;
+          if (isIdent(nextCh)) continue;
+
+          eb.insert(pos, " ");
+        }
+      });
+    }),
+  );
+
   context.subscriptions.push(...cmds);
   return cmds;
 }
