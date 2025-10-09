@@ -2,7 +2,7 @@
   "name": "cicode-vscode-extension",
   "displayName": "Cicode Syntax Highlighting",
   "description": "Syntax highlighting and navigation for Cicode",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "publisher": "MSkjel",
   "repository": {
     "type": "git",
@@ -97,11 +97,6 @@
           "default": true,
           "description": "Enable the simple Cicode formatter."
         },
-        "cicode.format.convertTabs": {
-          "type": "boolean",
-          "default": false,
-          "description": "Convert leading tabs to 4 spaces (outside parentheses only)."
-        },
         "cicode.format.maxConsecutiveBlankLines": {
           "type": "number",
           "default": 1,
@@ -119,11 +114,6 @@
           "default": 140,
           "minimum": 0,
           "description": "Warn when lines exceed this length (0 = disable)."
-        },
-        "cicode.lint.warnTabs": {
-          "type": "boolean",
-          "default": true,
-          "description": "Warn on tabs used for indentation."
         },
         "cicode.lint.warnMixedIndent": {
           "type": "boolean",

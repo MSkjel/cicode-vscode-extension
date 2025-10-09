@@ -211,19 +211,18 @@ export function makeDiagnostics(
           const bodyStartAbs = doc.offsetAt(f.bodyRange.start);
           const bodyEndAbs = doc.offsetAt(f.bodyRange.end);
           const body = text.slice(bodyStartAbs, bodyEndAbs);
-
           let hasReturnWithValue = false;
-          const re = /\bRETURN\b/gi;
+          const retRe = /\bRETURN\b([\s\S]*?)(?:;|$)/gi;
           let m: RegExpExecArray | null;
-          while ((m = re.exec(body))) {
+
+          while ((m = retRe.exec(body))) {
             const retAbs = bodyStartAbs + m.index;
             if (inSpan(retAbs, ignore)) continue;
-            let k = m.index + m[0].length;
-            while (k < body.length && /\s/.test(body[k])) k++;
-            if (k >= body.length) continue;
-            if (body[k] === ";") continue;
-            hasReturnWithValue = true;
-            break;
+            const payload = (m[1] || "").trim();
+            if (payload.length > 0) {
+              hasReturnWithValue = true;
+              break;
+            }
           }
 
           if (returnType === "VOID" && hasReturnWithValue) {
@@ -248,7 +247,6 @@ export function makeDiagnostics(
 
       if (cfg().get("cicode.lint.enable", true)) {
         const maxLen = cfg().get("cicode.lint.maxLineLength", 140) || 0;
-        const warnTabs = cfg().get("cicode.lint.warnTabs", true);
         const warnMixed = cfg().get("cicode.lint.warnMixedIndent", true);
         const warnSemi = cfg().get("cicode.lint.warnMissingSemicolons", true);
         const warnKwCase = cfg().get("cicode.lint.warnKeywordCase", false);
@@ -269,17 +267,6 @@ export function makeDiagnostics(
             );
           }
           const leading = s.match(/^\s*/)?.[0] || "";
-          if (warnTabs && /^\t+/.test(leading))
-            diags.push(
-              new vscode.Diagnostic(
-                new vscode.Range(
-                  new vscode.Position(i, 0),
-                  new vscode.Position(i, leading.length),
-                ),
-                "Use spaces (4) for indentation (tabs found).",
-                vscode.DiagnosticSeverity.Hint,
-              ),
-            );
           if (warnMixed && /^(?=.*\t)(?=.* )/.test(leading))
             diags.push(
               new vscode.Diagnostic(

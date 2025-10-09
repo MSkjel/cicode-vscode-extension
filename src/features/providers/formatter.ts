@@ -15,7 +15,6 @@ export function makeFormatter(
   const MIDDLES: RegExp[] = [
     /^\s*else\b/i,
     /^\s*elseif\b/i,
-    /^\s*case\b/i,
     /^\s*except\b/i,
     /^\s*finally\b/i,
   ];
@@ -88,7 +87,6 @@ export function makeFormatter(
         0,
         cfg().get("cicode.format.maxConsecutiveBlankLines", 1),
       );
-      const convertTabs = !!cfg().get("cicode.format.convertTabs", false);
 
       const start = new vscode.Position(0, 0);
       const end = doc.lineAt(Math.max(0, doc.lineCount - 1)).range.end;
@@ -113,8 +111,7 @@ export function makeFormatter(
         if (/^\s*(\/\/|!)/.test(trimmed)) {
           if (parenBalance > 0) out.push(line);
           else {
-            let base = "    ".repeat(depth);
-            if (convertTabs) base = base.replace(/\t/g, "    ");
+            let base = "\t".repeat(depth);
             out.push(base + trimmed);
           }
           parenBalance += delta;
@@ -131,8 +128,7 @@ export function makeFormatter(
         const isMiddle = isAny(trimmed, MIDDLES);
         const baseDepth = isMiddle ? Math.max(0, depth - 1) : depth;
         let normalized = normalizeOutsideParens(line).trim();
-        let indent = "    ".repeat(baseDepth);
-        if (convertTabs) indent = indent.replace(/\t/g, "    ");
+        let indent = "\t".repeat(baseDepth);
         const rebuilt = normalized.length ? indent + normalized : "";
         out.push(rebuilt);
         if (isAny(trimmed, OPENERS)) depth++;

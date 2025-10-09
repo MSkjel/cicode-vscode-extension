@@ -80,15 +80,16 @@
       "patterns": [
         {
           "name": "meta.function.header.cicode",
-          "match": "^(?i)\\s*(\\w+)\\s*\\(",
-          "captures": { "1": { "name": "entity.name.function.cicode" } }
+          "begin": "^(?i)\\s*(?!if\\b|while\\b|for\\b|repeat\\b|try\\b|select\\b|case\\b)(\\w+)\\s*\\(",
+          "beginCaptures": { "1": { "name": "entity.name.function.cicode" } },
+          "end": "$"
         },
         { "include": "#controlBlocks" },
         { "include": "$self" }
       ]
     },
     {
-      "match": "\\b(?i:(then|else|do|to|until|goto|break|continue|exit|abort|raise|return|except|finally|select|case))\\b",
+      "match": "\\b(?i:(if|while|for|repeat|try|then|else|do|to|until|goto|break|continue|exit|abort|raise|return|except|finally|select|case))\\b",
       "name": "keyword.control.cicode"
     },
     {
