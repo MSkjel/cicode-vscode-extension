@@ -289,7 +289,7 @@ export class Indexer {
       funcCtx: FunctionRange | null,
     ) => {
       const ignore = buildIgnoreSpans(sliceText);
-      const declRe = /^\s*(?:(GLOBAL|MODULE)\s+)?(\w+)\s+([^;]+);?/gim;
+      const declRe = /^\s*(?:(GLOBAL|MODULE)\s+)?(\w+)\s+([^\r\n;]+)\s*;?/gim;
       let m: RegExpExecArray | null;
       while ((m = declRe.exec(sliceText))) {
         const kw = (m[1] || "").toUpperCase();

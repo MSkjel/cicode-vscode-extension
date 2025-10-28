@@ -26,12 +26,18 @@ export function makeFormatter(
   const isAny = (line: string, patterns: RegExp[]) =>
     patterns.some((re) => re.test(line));
 
+  function stripLineCommentOnce(s: string) {
+    const m = s.match(/(.*?)(\/\/|!).*$/);
+    return m ? m[1] : s;
+  }
+
   function parenDelta(line: string) {
-    const parts = line.split(/(".*?(?<!\\)"|'.*?(?<!\\)')/);
+    const safe = stripLineCommentOnce(line);
+    const parts = safe.split(/(".*?(?<!\\)"|'.*?(?<!\\)')/);
     let opens = 0,
       closes = 0;
     for (let i = 0; i < parts.length; i++) {
-      if (i % 2 === 1) continue;
+      if (i % 2 === 1) continue; // skip quoted strings
       const seg = parts[i];
       opens += (seg.match(/\(/g) || []).length;
       closes += (seg.match(/\)/g) || []).length;
@@ -39,12 +45,22 @@ export function makeFormatter(
     return opens - closes;
   }
 
+  // Only space standalone assignment '=' (not <=, >=, etc.)
+  const ASSIGN_EQ = /(?<![<>=!:+\-*/%&|^])\s*=\s*(?![=])/g;
+
   function normalizeOutsideParens(line: string) {
     if (!/[=,]/.test(line)) return line;
-    return line
+
+    // Separate first line comment so we don't reformat comments
+    const commentSplit = line.match(/(.*?)(\/\/|!)(.*)$/);
+    const code = commentSplit ? commentSplit[1] : line;
+    const commentTail = commentSplit ? commentSplit[2] + commentSplit[3] : "";
+
+    const normalizedCode = code
       .split(/(".*?(?<!\\)"|'.*?(?<!\\)')/)
       .map((seg, idx) => {
-        if (idx % 2 === 1) return seg;
+        if (idx % 2 === 1) return seg; // keep strings intact
+
         const chunks: { type: "code" | "paren"; text: string }[] = [];
         let buf = "";
         let depth = 0;
@@ -69,15 +85,21 @@ export function makeFormatter(
           }
         }
         if (buf) chunks.push({ type: depth > 0 ? "paren" : "code", text: buf });
+
         return chunks
           .map((ch) =>
             ch.type === "paren"
               ? ch.text
-              : ch.text.replace(/\s*=\s*/g, " = ").replace(/\s*,\s*/g, ", "),
+              : ch.text
+                  .replace(ASSIGN_EQ, " = ")
+                  // tidy commas (code portions only)
+                  .replace(/\s*,\s*/g, ", "),
           )
           .join("");
       })
       .join("");
+
+    return normalizedCode + commentTail;
   }
 
   return {
@@ -102,37 +124,47 @@ export function makeFormatter(
         const trimmed = line.trim();
         const delta = parenDelta(line);
 
+        // collapse blank lines
         if (trimmed.length === 0 && parenBalance === 0) {
           blankCount++;
           if (blankCount <= maxBlank) out.push("");
           continue;
         } else blankCount = 0;
 
+        // Comment-only line?
         if (/^\s*(\/\/|!)/.test(trimmed)) {
           if (parenBalance > 0) out.push(line);
           else {
-            let base = "\t".repeat(depth);
-            out.push(base + trimmed);
+            const base = "\t".repeat(depth);
+            const commentBody = raw.replace(/^\s*/, "");
+            out.push(base + commentBody.trimEnd());
           }
           parenBalance += delta;
           continue;
         }
 
+        // Inside multi-line paren block? preserve as-is
         if (parenBalance > 0) {
           out.push(line);
-          parenBalance += delta;
+          parenBalance += delta; // always update
           continue;
         }
-
-        if (isAny(trimmed, CLOSERS)) depth = Math.max(0, depth - 1);
+        const isCloser = isAny(trimmed, CLOSERS);
         const isMiddle = isAny(trimmed, MIDDLES);
+        const isOpener = isAny(trimmed, OPENERS);
+
+        if (isCloser) depth = Math.max(0, depth - 1);
+
         const baseDepth = isMiddle ? Math.max(0, depth - 1) : depth;
+
         let normalized = normalizeOutsideParens(line).trim();
-        let indent = "\t".repeat(baseDepth);
+        const indent = "\t".repeat(baseDepth);
         const rebuilt = normalized.length ? indent + normalized : "";
         out.push(rebuilt);
-        if (isAny(trimmed, OPENERS)) depth++;
-        if (delta > 0) parenBalance += delta;
+
+        if (isOpener && !isCloser) depth++;
+
+        parenBalance += delta;
       }
 
       if (out.length === 0 || out[out.length - 1] !== "") out.push("");

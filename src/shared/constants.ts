@@ -6,6 +6,7 @@ export const KEYWORDS_WITH_PAREN = new Set([
   "REPEAT",
   "UNTIL",
   "DO",
+  "TO",
   "THEN",
   "ELSE",
   "SELECT",
