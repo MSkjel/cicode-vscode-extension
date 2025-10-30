@@ -64,12 +64,6 @@ export function makeDiagnostics(
       )
         return;
 
-
-    console.log('=== DIAGNOSTICS CONFIG DEBUG ===');
-    console.log('warnMagicNumbers:', cfg().get("cicode.lint.warnMagicNumbers"));
-    console.log('ignoredFunctions:', cfg().get("cicode.diagnostics.ignoredFunctions"));
-    console.log('================================');
-
       const text = doc.getText();
       const ignore = buildIgnoreSpans(text);
       const ignoreNoHeaders = buildIgnoreSpans(text, {
