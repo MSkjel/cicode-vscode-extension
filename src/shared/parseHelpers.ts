@@ -47,7 +47,7 @@ export function findMatchingParen(
         i++;
         continue;
       }
-      if (ch === "\\") {
+      if (ch === "^") {
         esc = true;
         i++;
         continue;
@@ -124,7 +124,7 @@ export function countArgsTopLevel(
         i++;
         continue;
       }
-      if (ch === "\\") {
+      if (ch === "^") {
         esc = true;
         i++;
         continue;

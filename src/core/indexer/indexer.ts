@@ -169,11 +169,9 @@ export class Indexer {
     text: string,
     doc: vscode.TextDocument,
   ): FunctionRange[] {
-    // Only ignore comments/strings; do not mark headers as ignored here.
     const ignoreCS = buildIgnoreSpans(text, { includeFunctionHeaders: false });
 
-    // capture any sequence of words before FUNCTION into group 2
-    const regex = /(^|\n)\s*((?:\w+\s+)*)function\s+(\w+)\s*\(([^)]*)\)/gim;
+    const funcKeywordRe = /\bfunction\b/gim;
     const headers: Array<{
       returnType: string;
       name: string;
@@ -187,24 +185,80 @@ export class Indexer {
     }> = [];
 
     let m: RegExpExecArray | null;
-    while ((m = regex.exec(text))) {
-      const fullStart = m.index + (m[1] ? m[1].length : 0);
-      if (inSpan(fullStart, ignoreCS)) continue; // header inside comment/string
+    while ((m = funcKeywordRe.exec(text))) {
+      if (inSpan(m.index, ignoreCS)) continue;
 
-      const prefixes = (m[2] || "").trim().split(/\s+/).filter(Boolean);
+      const funcKeywordPos = m.index + m[0].length;
+
+      const sameLine = /^\s*(\w+)\s*\(([^)]*)\)/i.exec(
+        text.slice(funcKeywordPos),
+      );
+
+      let name: string;
+      let paramsRaw: string;
+      let nameOffset: number;
+      let headerEndPos: number; // Track where header actually ends
+
+      if (sameLine) {
+        name = sameLine[1];
+        paramsRaw = sameLine[2] || "";
+        nameOffset =
+          funcKeywordPos + sameLine.index + sameLine[0].indexOf(name);
+        headerEndPos = funcKeywordPos + sameLine.index + sameLine[0].length;
+      } else {
+        const afterFunc = text.slice(funcKeywordPos);
+        const nextLine = /^\s*\r?\n\s*(\w+)\s*\(([^)]*)\)/i.exec(afterFunc);
+        if (!nextLine) continue;
+
+        name = nextLine[1];
+        paramsRaw = nextLine[2] || "";
+        nameOffset =
+          funcKeywordPos + nextLine.index + nextLine[0].indexOf(name);
+        headerEndPos = funcKeywordPos + nextLine.index + nextLine[0].length;
+      }
+
+      const beforeFunc = text.slice(0, m.index);
+      const beforeLines = beforeFunc.split(/\r?\n/);
+      const tokens: string[] = [];
+
+      for (
+        let i = beforeLines.length - 1;
+        i >= Math.max(0, beforeLines.length - 10);
+        i--
+      ) {
+        const lineTokens = beforeLines[i].trim().split(/\s+/).filter(Boolean);
+        tokens.unshift(...lineTokens);
+
+        if (/[;{}]|end\b/i.test(beforeLines[i])) break;
+      }
+
       let returnType = "VOID";
-      for (let i = prefixes.length - 1; i >= 0; i--) {
-        const tok = prefixes[i].toUpperCase();
+      for (let i = tokens.length - 1; i >= 0; i--) {
+        const tok = tokens[i].toUpperCase();
         if (TYPE_RE.test(tok)) {
           returnType = tok;
           break;
         }
       }
 
-      const name = m[3];
-      const paramsRaw = m[4] || "";
-      const headerStart = m.index;
-      const nameOffset = m.index + m[0].indexOf(name);
+      let headerStart = m.index;
+      for (
+        let i = beforeLines.length - 1;
+        i >= Math.max(0, beforeLines.length - 10);
+        i--
+      ) {
+        const line = beforeLines[i].trim();
+        if (!line || /^\/\//.test(line)) continue;
+        const hasModOrType =
+          /^(private|public|global|module|const|static|boolean|bool|int|real|long|ulong|string|object|quality|timestamp|void)\b/i.test(
+            line,
+          );
+        if (hasModOrType) {
+          headerStart = text.lastIndexOf(line, m.index);
+          break;
+        }
+      }
+
       const startPos = doc.positionAt(nameOffset);
       const headerPos = doc.positionAt(headerStart);
       const loc = new vscode.Location(doc.uri, startPos);
@@ -214,7 +268,6 @@ export class Indexer {
       let returnsDoc: string | undefined;
 
       const lines = extractLeadingTripleSlashDoc(text, headerStart);
-
       if (lines.length) {
         const parsed = parseXmlDocLines(lines);
         docText = parsed.summary || undefined;
@@ -232,29 +285,51 @@ export class Indexer {
         docText,
         paramDocs,
         returnsDoc,
-      });
+        headerEndPos, // Store this for body calculation
+      } as any);
     }
 
+    // Find matching END for each function
     const out: FunctionRange[] = [];
-    for (let i = 0; i < headers.length; i++) {
-      const h = headers[i];
-      const end =
-        i + 1 < headers.length ? headers[i + 1].headerIndex : text.length;
-      const rpar = text.indexOf(")", h.headerIndex);
-      const bodyStart = rpar === -1 ? h.headerIndex : rpar + 1;
+    for (const h of headers as any[]) {
+      // Body starts right after the ) character
+      const bodyStart = h.headerEndPos;
+
+      let depth = 1;
+      const tokenRe = /\b(function|if|for|while|repeat|try|select|end)\b/gi;
+      tokenRe.lastIndex = bodyStart;
+
+      let endPos = text.length;
+      let match: RegExpExecArray | null;
+
+      while ((match = tokenRe.exec(text))) {
+        if (inSpan(match.index, ignoreCS)) continue;
+
+        const kw = match[0].toLowerCase();
+        if (kw === "end") {
+          depth--;
+          if (depth === 0) {
+            endPos = match.index + match[0].length;
+            break;
+          }
+        } else {
+          depth++;
+        }
+      }
+
       out.push({
         ...h,
         startOffset: h.headerIndex,
-        endOffset: end,
+        endOffset: endPos,
         bodyRange: new vscode.Range(
           doc.positionAt(bodyStart),
-          doc.positionAt(end),
+          doc.positionAt(endPos),
         ),
       } as unknown as FunctionRange);
     }
+
     return out;
   }
-
   private _parseParamVariables(
     params: string[],
   ): Array<{ type: string; name: string }> {
@@ -310,39 +385,59 @@ export class Indexer {
           const loc = new vscode.Location(doc.uri, pos);
 
           const isGlobalKw = kw === "GLOBAL";
-          if (scopeKind === "local" && !isGlobalKw) {
-            this._addVar(name, {
-              name,
-              type,
-              scopeType: "local",
-              scopeId: this.localScopeId(file, funcCtx!.name),
-              location: loc,
-              file,
-              range: funcCtx!.bodyRange,
-              isParam: false,
-            });
-          } else if (isGlobalKw) {
-            this._addVar(name, {
-              name,
-              type,
-              scopeType: "global",
-              scopeId: "global",
-              location: loc,
-              file,
-              range: null,
-              isParam: false,
-            });
+          const isModuleKw = kw === "MODULE";
+
+          if (scopeKind === "local") {
+            // Inside a function
+            if (isGlobalKw) {
+              this._addVar(name, {
+                name,
+                type,
+                scopeType: "global",
+                scopeId: "global",
+                location: loc,
+                file,
+                range: null,
+                isParam: false,
+              });
+            } else {
+              // Everything else is local
+              this._addVar(name, {
+                name,
+                type,
+                scopeType: "local",
+                scopeId: this.localScopeId(file, funcCtx!.name),
+                location: loc,
+                file,
+                range: funcCtx!.bodyRange,
+                isParam: false,
+              });
+            }
           } else {
-            this._addVar(name, {
-              name,
-              type,
-              scopeType: "module",
-              scopeId: file,
-              location: loc,
-              file,
-              range: null,
-              isParam: false,
-            });
+            // Module-level code
+            if (isGlobalKw) {
+              this._addVar(name, {
+                name,
+                type,
+                scopeType: "global",
+                scopeId: "global",
+                location: loc,
+                file,
+                range: null,
+                isParam: false,
+              });
+            } else {
+              this._addVar(name, {
+                name,
+                type,
+                scopeType: "module",
+                scopeId: file,
+                location: loc,
+                file,
+                range: null,
+                isParam: false,
+              });
+            }
           }
         }
       }

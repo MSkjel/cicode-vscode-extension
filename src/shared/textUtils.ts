@@ -145,13 +145,39 @@ export function buildIgnoreSpans(
   const spans = scanCommentAndStringSpans(text);
 
   if (includeFunctionHeaders) {
-    const re =
-      /(^|\n)\s*(?:[A-Za-z_]\w*\s+)*function\b\s*([A-Za-z_]\w*)?\s*\([\s\S]*?\)/gim;
+    const re = /(^|\n)\s*(?:[A-Za-z_]\w*\s+)*function\b/gim;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text))) {
       const start = m.index + (m[1] ? m[1].length : 0);
-      const end = m.index + m[0].length;
-      if (!inSpan(start, spans)) spans.push([start, end]);
+      if (inSpan(start, spans)) continue;
+
+      // Find opening paren
+      let pos = m.index + m[0].length;
+      while (pos < text.length && /[\s\r\n]/.test(text[pos])) pos++;
+
+      // Expect name then paren, or just paren
+      if (pos < text.length && /[A-Za-z_]/.test(text[pos])) {
+        while (pos < text.length && /[A-Za-z0-9_]/.test(text[pos])) pos++;
+        while (pos < text.length && /[\s\r\n]/.test(text[pos])) pos++;
+      }
+
+      if (pos >= text.length || text[pos] !== "(") continue;
+
+      // Find matching close paren, respecting ignore spans
+      let depth = 1;
+      pos++;
+      while (pos < text.length && depth > 0) {
+        if (!inSpan(pos, spans)) {
+          if (text[pos] === "(") depth++;
+          else if (text[pos] === ")") depth--;
+        }
+        pos++;
+      }
+
+      if (depth === 0) {
+        spans.push([start, pos]);
+      }
+
       if (re.lastIndex === m.index) re.lastIndex++;
     }
   }

@@ -129,6 +129,24 @@
           "type": "boolean",
           "default": false,
           "description": "Suggest UPPERCASE keywords/END/IF/etc. Does not auto-fix."
+        },
+        "cicode.lint.warnUnusedVariables": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn about variables that are declared but never used."
+        },
+        "cicode.lint.warnMagicNumbers": {
+          "type": "boolean",
+          "default": false,
+          "description": "Warn about hardcoded numeric literals (excludes 0, 1, -1, and array indices)."
+        },
+        "cicode.diagnostics.ignoredFunctions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Function names to exclude from undefined and argument count checks (case-insensitive)."
         }
       }
     }
