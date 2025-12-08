@@ -164,14 +164,14 @@ export class Indexer {
     if (!this.variableCache.has(k)) this.variableCache.set(k, []);
     this.variableCache.get(k)!.push(entry);
   }
-
+  
   private _extractFunctionsWithRanges(
     text: string,
     doc: vscode.TextDocument,
   ): FunctionRange[] {
     const ignoreCS = buildIgnoreSpans(text, { includeFunctionHeaders: false });
 
-    const funcKeywordRe = /\bfunction\b/gim;
+    const funcKeywordRe = /\bfunction\b/gi;
     const headers: Array<{
       returnType: string;
       name: string;
@@ -182,6 +182,7 @@ export class Indexer {
       docText?: string;
       paramDocs?: Record<string, string>;
       returnsDoc?: string;
+      headerEndPos: number;
     }> = [];
 
     let m: RegExpExecArray | null;
@@ -190,14 +191,14 @@ export class Indexer {
 
       const funcKeywordPos = m.index + m[0].length;
 
+      let name = "";
+      let paramsRaw = "";
+      let nameOffset = 0;
+      let headerEndPos = 0;
+
       const sameLine = /^\s*(\w+)\s*\(([^)]*)\)/i.exec(
         text.slice(funcKeywordPos),
       );
-
-      let name: string;
-      let paramsRaw: string;
-      let nameOffset: number;
-      let headerEndPos: number; // Track where header actually ends
 
       if (sameLine) {
         name = sameLine[1];
@@ -207,69 +208,85 @@ export class Indexer {
         headerEndPos = funcKeywordPos + sameLine.index + sameLine[0].length;
       } else {
         const afterFunc = text.slice(funcKeywordPos);
-        const nextLine = /^\s*\r?\n\s*(\w+)\s*\(([^)]*)\)/i.exec(afterFunc);
-        if (!nextLine) continue;
+        const lines = afterFunc.split(/\r?\n/);
 
-        name = nextLine[1];
-        paramsRaw = nextLine[2] || "";
-        nameOffset =
-          funcKeywordPos + nextLine.index + nextLine[0].indexOf(name);
-        headerEndPos = funcKeywordPos + nextLine.index + nextLine[0].length;
+        let found = false;
+        let offset = funcKeywordPos;
+
+        for (const ln of lines) {
+          const trimmed = ln.trim();
+
+          if (!trimmed || trimmed.startsWith("!") || trimmed.startsWith("//")) {
+            offset += ln.length + 1;
+            continue;
+          }
+
+          const m2 = /^(\w+)\s*\(([^)]*)\)/i.exec(trimmed);
+          if (m2) {
+            const sig = m2[0];
+            name = m2[1];
+            paramsRaw = m2[2] || "";
+
+            nameOffset = offset + ln.indexOf(name);
+            headerEndPos = offset + ln.indexOf(sig) + sig.length;
+
+            found = true;
+          }
+          break;
+        }
+
+        if (!found) continue;
       }
 
       const beforeFunc = text.slice(0, m.index);
       const beforeLines = beforeFunc.split(/\r?\n/);
-      const tokens: string[] = [];
-
-      for (
-        let i = beforeLines.length - 1;
-        i >= Math.max(0, beforeLines.length - 10);
-        i--
-      ) {
-        const lineTokens = beforeLines[i].trim().split(/\s+/).filter(Boolean);
-        tokens.unshift(...lineTokens);
-
-        if (/[;{}]|end\b/i.test(beforeLines[i])) break;
-      }
 
       let returnType = "VOID";
-      for (let i = tokens.length - 1; i >= 0; i--) {
-        const tok = tokens[i].toUpperCase();
-        if (TYPE_RE.test(tok)) {
-          returnType = tok;
-          break;
+
+      // Scan upward max 10 lines
+      for (let i = beforeLines.length - 1; i >= 0 && i >= beforeLines.length - 10; i--) {
+        const raw = beforeLines[i];
+
+        // Strip comments
+        const line = raw.replace(/\/\/.*$/, "").replace(/!.*$/, "").trim();
+
+        if (!line) continue; // skip empty
+
+        // STOP variable declaration lines
+        if (/^\s*MODULE\b/i.test(line)) break;
+        if (line.endsWith(";")) break;
+
+        // STOP code-like lines (not part of header)
+        if (/\b(END|IF|FOR|WHILE|SELECT)\b/i.test(line)) break;
+
+        const mType =
+          /^(?:(?:private|public|global|module|const|static)\s+)*(\w+)\s*$/i.exec(
+            line,
+          );
+        if (mType) {
+          const maybe = mType[1].toUpperCase();
+          if (TYPE_RE.test(maybe)) {
+            returnType = maybe;
+            break;
+          }
         }
       }
 
+      // Determine header start position
       let headerStart = m.index;
-      for (
-        let i = beforeLines.length - 1;
-        i >= Math.max(0, beforeLines.length - 10);
-        i--
-      ) {
-        const line = beforeLines[i].trim();
-        if (!line || /^\/\//.test(line)) continue;
-        const hasModOrType =
-          /^(private|public|global|module|const|static|boolean|bool|int|real|long|ulong|string|object|quality|timestamp|void)\b/i.test(
-            line,
-          );
-        if (hasModOrType) {
-          headerStart = text.lastIndexOf(line, m.index);
-          break;
-        }
-      }
 
       const startPos = doc.positionAt(nameOffset);
       const headerPos = doc.positionAt(headerStart);
       const loc = new vscode.Location(doc.uri, startPos);
 
+      // Documentation extraction
       let docText: string | undefined;
       let paramDocs: Record<string, string> | undefined;
       let returnsDoc: string | undefined;
 
-      const lines = extractLeadingTripleSlashDoc(text, headerStart);
-      if (lines.length) {
-        const parsed = parseXmlDocLines(lines);
+      const docLines = extractLeadingTripleSlashDoc(text, headerStart);
+      if (docLines.length) {
+        const parsed = parseXmlDocLines(docLines);
         docText = parsed.summary || undefined;
         returnsDoc = parsed.returns || undefined;
         if (Object.keys(parsed.paramDocs).length) paramDocs = parsed.paramDocs;
@@ -285,14 +302,14 @@ export class Indexer {
         docText,
         paramDocs,
         returnsDoc,
-        headerEndPos, // Store this for body calculation
-      } as any);
+        headerEndPos,
+      });
     }
 
-    // Find matching END for each function
+    // Match function bodies
     const out: FunctionRange[] = [];
-    for (const h of headers as any[]) {
-      // Body starts right after the ) character
+
+    for (const h of headers) {
       const bodyStart = h.headerEndPos;
 
       let depth = 1;
@@ -300,16 +317,16 @@ export class Indexer {
       tokenRe.lastIndex = bodyStart;
 
       let endPos = text.length;
-      let match: RegExpExecArray | null;
+      let t: RegExpExecArray | null;
 
-      while ((match = tokenRe.exec(text))) {
-        if (inSpan(match.index, ignoreCS)) continue;
+      while ((t = tokenRe.exec(text))) {
+        if (inSpan(t.index, ignoreCS)) continue;
 
-        const kw = match[0].toLowerCase();
+        const kw = t[0].toLowerCase();
         if (kw === "end") {
           depth--;
           if (depth === 0) {
-            endPos = match.index + match[0].length;
+            endPos = t.index + t[0].length;
             break;
           }
         } else {
@@ -325,11 +342,12 @@ export class Indexer {
           doc.positionAt(bodyStart),
           doc.positionAt(endPos),
         ),
-      } as unknown as FunctionRange);
+      } as FunctionRange);
     }
 
     return out;
   }
+  
   private _parseParamVariables(
     params: string[],
   ): Array<{ type: string; name: string }> {

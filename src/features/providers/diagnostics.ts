@@ -12,6 +12,10 @@ import {
 } from "../../shared/parseHelpers";
 import { KEYWORDS_WITH_PAREN } from "../../shared/constants";
 
+function escapeRegex(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function computeArgBounds(params: string[]): {
   min: number;
   max: number;
@@ -56,8 +60,12 @@ export function makeDiagnostics(
 ): vscode.DiagnosticCollection {
   const coll = vscode.languages.createDiagnosticCollection("cicode");
 
+  let indexingReady = false;
+
   async function run(doc: vscode.TextDocument) {
     try {
+      if (!indexingReady) return; 
+
       if (
         doc.languageId !== "cicode" &&
         !doc.uri.fsPath.toLowerCase().endsWith(".ci")
@@ -133,37 +141,37 @@ export function makeDiagnostics(
         }
       }
 
-      // E2019: Check for function calls without parentheses
-      {
-        const allFuncs = new Set<string>();
-        for (const [name] of indexer.getAllFunctions()) {
-          allFuncs.add(name);
-        }
+      // E2019: Check for function calls without parentheses. Needs rewrite
+      // {
+      //   const allFuncs = new Set<string>();
+      //   for (const [name] of indexer.getAllFunctions()) {
+      //     allFuncs.add(name);
+      //   }
 
-        const re = /\b([A-Za-z_]\w+)\b(?!\s*\()/g;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(text))) {
-          if (inSpan(m.index, ignoreNoHeaders)) continue;
+      //   const re = /\b([A-Za-z_]\w+)\b(?!\s*\()/g;
+      //   let m: RegExpExecArray | null;
+      //   while ((m = re.exec(text))) {
+      //     if (inSpan(m.index, ignoreNoHeaders)) continue;
 
-          const name = m[1];
-          const nameLower = name.toLowerCase();
+      //     const name = m[1];
+      //     const nameLower = name.toLowerCase();
 
-          if (
-            allFuncs.has(nameLower) &&
-            !KEYWORDS_WITH_PAREN.has(name.toUpperCase())
-          ) {
-            const s = doc.positionAt(m.index);
-            const e = doc.positionAt(m.index + name.length);
-            diags.push(
-              new vscode.Diagnostic(
-                new vscode.Range(s, e),
-                `E2019: Function '${name}' requires parentheses ()`,
-                vscode.DiagnosticSeverity.Error,
-              ),
-            );
-          }
-        }
-      }
+      //     if (
+      //       allFuncs.has(nameLower) &&
+      //       !KEYWORDS_WITH_PAREN.has(name.toUpperCase())
+      //     ) {
+      //       const s = doc.positionAt(m.index);
+      //       const e = doc.positionAt(m.index + name.length);
+      //       diags.push(
+      //         new vscode.Diagnostic(
+      //           new vscode.Range(s, e),
+      //           `E2019: Function '${name}' requires parentheses ()`,
+      //           vscode.DiagnosticSeverity.Error,
+      //         ),
+      //       );
+      //     }
+      //   }
+      // }
 
       // Check duplicate functions
       {
@@ -258,7 +266,7 @@ export function makeDiagnostics(
           const body = text.slice(bodyStartAbs, bodyEndAbs);
 
           let hasReturnWithValue = false;
-          const retRe = /\bRETURN\b\s*([^\r\n;]*)/gi;
+          const retRe = /\bRETURN\b/gi;
           let m: RegExpExecArray | null;
           const returnPositions: number[] = [];
 
@@ -267,8 +275,48 @@ export function makeDiagnostics(
             if (inSpan(retAbs, ignoreNoHeaders)) continue;
 
             returnPositions.push(m.index);
-            const payload = (m[1] || "").trim();
-            if (payload.length > 0) {
+
+            // Extract the rest of the line after RETURN, strip comments
+            const fullLineEnd = body.indexOf("\n", m.index);
+            const end = fullLineEnd === -1 ? body.length : fullLineEnd;
+
+            const rawLine = body.slice(m.index, end);
+
+            // remove comments
+            const noComments = rawLine
+              .replace(/\/\/.*$/, "")
+              .replace(/!.*$/, "");
+
+            // remove "RETURN"
+            const after = noComments.replace(/\bRETURN\b/i, "").trim();
+
+            // Determine if this RETURN has a real value
+            let hasValue = false;
+
+            if (after.length > 0) {
+              const firstTok = after.split(/\s+/)[0].toUpperCase();
+
+              // keywords that do NOT count as values
+              const controlKeywords = new Set([
+                "END",
+                "ELSE",
+                "EXCEPT",
+                "FINALLY",
+                "CASE",
+                "THEN",
+                "DO",
+                "SELECT",
+                "FOR",
+                "WHILE",
+                "IF",
+              ]);
+
+              if (!controlKeywords.has(firstTok)) {
+                hasValue = true;
+              }
+            }
+
+            if (hasValue) {
               hasReturnWithValue = true;
 
               if (returnType === "VOID") {
@@ -284,6 +332,7 @@ export function makeDiagnostics(
             }
           }
 
+          // Missing return with value
           if (returnType !== "VOID" && !hasReturnWithValue) {
             diags.push(
               new vscode.Diagnostic(
@@ -294,44 +343,44 @@ export function makeDiagnostics(
             );
           }
 
-          // Check for unreachable code after RETURN
-          for (const retPos of returnPositions) {
-            const afterReturn = body.slice(retPos);
-            const returnLineEnd = afterReturn.indexOf("\n");
-            if (returnLineEnd === -1) continue;
+          // Check unreachable code after RETURN. Doenst work properly. Needs rewrite
+          // for (const retPos of returnPositions) {
+          //   const afterReturn = body.slice(retPos);
+          //   const returnLineEnd = afterReturn.indexOf("\n");
+          //   if (returnLineEnd === -1) continue;
 
-            const nextCode = afterReturn.slice(returnLineEnd + 1);
-            const lines = nextCode.split(/\r?\n/);
+          //   const nextCode = afterReturn.slice(returnLineEnd + 1);
+          //   const lines = nextCode.split(/\r?\n/);
 
-            for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-              const line = lines[lineIdx].trim();
-              if (!line) continue;
+          //   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+          //     const line = lines[lineIdx].trim();
+          //     if (!line) continue;
 
-              const absPos =
-                bodyStartAbs +
-                retPos +
-                returnLineEnd +
-                1 +
-                nextCode.indexOf(lines[lineIdx]);
-              if (inSpan(absPos, ignoreNoHeaders)) continue;
+          //     const absPos =
+          //       bodyStartAbs +
+          //       retPos +
+          //       returnLineEnd +
+          //       1 +
+          //       nextCode.indexOf(lines[lineIdx]);
+          //     if (inSpan(absPos, ignoreNoHeaders)) continue;
 
-              if (!/^(END|ELSE|EXCEPT|FINALLY|CASE)\b/i.test(line)) {
-                const pos = doc.positionAt(absPos);
-                diags.push(
-                  new vscode.Diagnostic(
-                    new vscode.Range(
-                      pos,
-                      pos.translate(0, Math.min(line.length, 50)),
-                    ),
-                    "Unreachable code after RETURN statement.",
-                    vscode.DiagnosticSeverity.Warning,
-                  ),
-                );
-                break;
-              }
-              break;
-            }
-          }
+          //     if (!/^(END|ELSE|EXCEPT|FINALLY|CASE)\b/i.test(line)) {
+          //       const pos = doc.positionAt(absPos);
+          //       diags.push(
+          //         new vscode.Diagnostic(
+          //           new vscode.Range(
+          //             pos,
+          //             pos.translate(0, Math.min(line.length, 50)),
+          //           ),
+          //           "Unreachable code after RETURN statement.",
+          //           vscode.DiagnosticSeverity.Warning,
+          //         ),
+          //       );
+          //       break;
+          //     }
+          //     break;
+          //   }
+          // }
         }
       }
 
@@ -419,7 +468,8 @@ export function makeDiagnostics(
           );
 
           for (const v of localVars) {
-            const nameRe = new RegExp(`\\b${v.name}\\b`, "gi");
+            const safe = escapeRegex(v.name);
+            const nameRe = new RegExp(`\\b${safe}\\b`, "gi");
             let count = 0;
             let m: RegExpExecArray | null;
 
@@ -561,11 +611,19 @@ export function makeDiagnostics(
     }
   }
 
+  indexer.onIndexed(() => {
+    indexingReady = true;
+
+    const editor = vscode.window.activeTextEditor;
+    if (editor) run(editor.document);
+  });
+
   const subs: vscode.Disposable[] = [];
   subs.push(vscode.workspace.onDidOpenTextDocument(run));
   subs.push(vscode.workspace.onDidChangeTextDocument((e) => run(e.document)));
   subs.push(vscode.workspace.onDidSaveTextDocument(run));
-  if (vscode.window.activeTextEditor)
-    run(vscode.window.activeTextEditor.document);
+  subs.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
+      if (editor) run(editor.document);
+  }));
   return coll;
 }

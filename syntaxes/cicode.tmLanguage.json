@@ -70,7 +70,7 @@
     },
     {
       "name": "meta.function.cicode",
-      "begin": "(?i)^\\s*(?:(?:private|public|global|module|const|static)\\s+)*(?:(?:boolean|bool|int|real|long|ulong|string|object|module|quality|timestamp|void)\\s+)?function\\s*$",
+      "begin": "(?i)^\\s*(?:(?:private|public|global|module|const|static)\\s+)*(?:(?:boolean|bool|int|real|long|ulong|string|object|module|quality|timestamp|void)\\s+)?function\\b(?![^\\r\\n]*\\()",
       "beginCaptures": {
         "0": { "name": "keyword.declaration.function.cicode" }
       },
@@ -78,6 +78,11 @@
       "endCaptures": { "0": { "name": "keyword.declaration.function.cicode" } },
       "applyEndPatternLast": true,
       "patterns": [
+        {
+          "name": "comment.after-function.cicode",
+          "begin": "^(?i)\\s*(//|!|\\|)(.*)$",
+          "while": "^(?i)\\s*(//|!|\\|)(.*)$"
+        },
         {
           "name": "meta.function.header.cicode",
           "begin": "^(?i)\\s*(?!if\\b|while\\b|for\\b|repeat\\b|try\\b|select\\b|case\\b)(\\w+)\\s*\\(",
@@ -166,7 +171,7 @@
       ]
     },
     {
-      "begin": "(//|!)",
+      "begin": "(//|!|\\|)",
       "beginCaptures": {
         "0": { "name": "punctuation.definition.comment.cicode" }
       },
