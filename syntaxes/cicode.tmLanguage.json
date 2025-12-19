@@ -96,7 +96,7 @@
       ]
     },
     {
-      "match": "\\b(?i:(if|while|for|repeat|try|then|else|do|to|until|goto|break|continue|exit|abort|raise|return|except|finally|select|case|end|function))\\b",
+      "match": "\\b(?i:(if|while|for|repeat|try|then|else|do|to|until|goto|break|continue|exit|abort|raise|return|except|finally|select|case))\\b",
       "name": "keyword.control.cicode"
     },
     {
@@ -202,8 +202,8 @@
       ]
     },
     {
-      "comment": "Variable/identifier references (not followed by opening paren, which would be function calls)",
-      "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\b(?!\\s*\\()",
+      "comment": "Variable/identifier references (excludes keywords and function calls)",
+      "match": "\\b(?!(?i:if|while|for|repeat|try|then|else|do|to|until|goto|break|continue|exit|abort|raise|return|except|finally|select|case|end|function|and|or|xor|not|div|mod|shl|shr|bitand|bitor|module|global|private|public|const|static|boolean|bool|int|real|void|long|ulong|string|object|quality|timestamp)\\b)([a-zA-Z_][a-zA-Z0-9_]*)\\b(?!\\s*\\()",
       "name": "variable.other.cicode"
     }
   ],

@@ -81,7 +81,8 @@ export function makeNavProviders(indexer: Indexer): vscode.Disposable[] {
             ? text.slice(doc.offsetAt(range.start), doc.offsetAt(range.end))
             : text;
           const baseOffset = range ? doc.offsetAt(range.start) : 0;
-          const ignore = buildIgnoreSpans(searchText);
+          // Don't include function headers in ignore spans - we want to find references in signatures
+          const ignore = buildIgnoreSpans(searchText, { includeFunctionHeaders: false });
           const escaped = escapeRegExp(word);
           const re = new RegExp(`\\b${escaped}\\b`, "g");
 
@@ -117,10 +118,33 @@ export function makeNavProviders(indexer: Indexer): vscode.Disposable[] {
           return results;
         }
         if (varEntry) {
-          if (varEntry.scopeType === "local")
-            await scan(document.uri, varEntry.range!);
-          else if (varEntry.scopeType === "module") await scan(document.uri);
-          else for (const f of files) await scan(f);
+          if (varEntry.scopeType === "local") {
+            // For parameters, we need to search the full function (including signature)
+            // because the parameter is defined in the header, not the body
+            if (varEntry.isParam) {
+              // Find the enclosing function and use its full range
+              const funcRanges = indexer.getFunctionRanges(document.uri.fsPath);
+              const enclosingFunc = funcRanges.find(
+                (f) => indexer.localScopeId(document.uri.fsPath, f.name) === varEntry.scopeId
+              );
+              if (enclosingFunc) {
+                // Create range from function header start to body end
+                const fullRange = new vscode.Range(
+                  enclosingFunc.headerPos,
+                  enclosingFunc.bodyRange.end
+                );
+                await scan(document.uri, fullRange);
+              } else {
+                await scan(document.uri, varEntry.range!);
+              }
+            } else {
+              await scan(document.uri, varEntry.range!);
+            }
+          } else if (varEntry.scopeType === "module") {
+            await scan(document.uri);
+          } else {
+            for (const f of files) await scan(f);
+          }
           return results;
         }
 

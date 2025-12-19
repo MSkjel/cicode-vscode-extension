@@ -632,7 +632,7 @@ export class Indexer {
     return candidates[0] || null;
   }
 
-  /** Find the function containing a given position */
+  /** Find the function containing a given position (includes header and body) */
   findEnclosingFunction(
     document: vscode.TextDocument,
     position: vscode.Position,
@@ -643,9 +643,10 @@ export class Indexer {
 
     const off = document.offsetAt(position);
     for (const f of list) {
-      const s = document.offsetAt(f.bodyRange.start);
-      const e = document.offsetAt(f.bodyRange.end);
-      if (off >= s && off < e) return f;
+      // Check full function range: from header start to body end
+      const headerStart = document.offsetAt(f.headerPos);
+      const bodyEnd = document.offsetAt(f.bodyRange.end);
+      if (off >= headerStart && off < bodyEnd) return f;
     }
     return null;
   }
