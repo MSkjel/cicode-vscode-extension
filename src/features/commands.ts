@@ -1,6 +1,10 @@
 import * as vscode from "vscode";
+import * as path from "path";
 import type { Indexer } from "../core/indexer/indexer";
-import { rebuildBuiltins } from "../core/builtins/builtins";
+import {
+  rebuildBuiltins,
+  resolveContentPath,
+} from "../core/builtins/builtins";
 import { insertDocSkeletonAtCursor } from "./docSkeleton";
 
 export function registerCommands(
@@ -42,14 +46,26 @@ export function registerCommands(
           );
 
         const f = indexer.getAllFunctions().get(name.toLowerCase());
-        const helpPath = (f as any)?.helpPath as string | undefined;
+        const helpFile = (f as any)?.helpPath as string | undefined;
 
-        if (!helpPath) {
+        if (!helpFile) {
           vscode.window.showInformationMessage(`No help page for '${name}'.`);
           return;
         }
 
-        const uri = vscode.Uri.file(helpPath);
+        // Find content path
+        const contentPath = resolveContentPath(cfg);
+
+        if (!contentPath) {
+          vscode.window.showInformationMessage(
+            "Could not find AVEVA help files. Check cicode.avevaPath setting.",
+          );
+          return;
+        }
+
+        // Open the help file directly
+        const fullPath = path.join(contentPath, helpFile);
+        const uri = vscode.Uri.file(fullPath);
         await vscode.env.openExternal(uri);
       },
     ),

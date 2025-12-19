@@ -6,7 +6,134 @@ import { BuiltinFunction } from "./types";
 
 let builtinCache: Map<string, BuiltinFunction> = new Map();
 const CACHE_FILE = "builtinFunctions.json";
-const CACHE_VERSION = 4;
+const CACHE_VERSION = 6;
+
+const CONTENT_FOLDER_NAME = "CicodeReferenceCitectHTML";
+
+// Cached resolved paths
+let resolvedContentPath: string | null = null;
+let resolvedHelpRoot: string | null = null;
+
+/**
+ * Recursively search for the Cicode help content folder
+ */
+function findContentFolder(baseDir: string, maxDepth = 5): string | null {
+  if (maxDepth <= 0 || !fs.existsSync(baseDir)) return null;
+
+  try {
+    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const fullPath = path.join(baseDir, entry.name);
+
+      // Check if this is the CicodeReferenceCitectHTML folder
+      if (entry.name === CONTENT_FOLDER_NAME) {
+        const contentPath = path.join(fullPath, "Content");
+        if (fs.existsSync(contentPath)) {
+          return contentPath;
+        }
+      }
+
+      // Recurse into subdirectories
+      const found = findContentFolder(fullPath, maxDepth - 1);
+      if (found) return found;
+    }
+  } catch {
+    // Permission denied or other error, skip this directory
+  }
+  return null;
+}
+
+/**
+ * Find the help root folder (containing Default.htm)
+ */
+function findHelpRoot(baseDir: string, maxDepth = 5): string | null {
+  if (maxDepth <= 0 || !fs.existsSync(baseDir)) return null;
+
+  try {
+    // Check if Default.htm exists in this folder
+    if (fs.existsSync(path.join(baseDir, "Default.htm"))) {
+      return baseDir;
+    }
+
+    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const fullPath = path.join(baseDir, entry.name);
+      const found = findHelpRoot(fullPath, maxDepth - 1);
+      if (found) return found;
+    }
+  } catch {
+    // Permission denied or other error, skip this directory
+  }
+  return null;
+}
+
+/**
+ * Resolve the content path from user setting
+ */
+export function resolveContentPath(
+  cfg: () => vscode.WorkspaceConfiguration,
+): string | null {
+  if (resolvedContentPath) return resolvedContentPath;
+
+  const avevaPath =
+    (cfg().get("cicode.avevaPath") as string | undefined)?.trim() || "";
+
+  if (!avevaPath) return null;
+
+  // If it already points to a Content folder with .htm files, use it directly
+  if (fs.existsSync(avevaPath)) {
+    try {
+      const files = fs.readdirSync(avevaPath);
+      if (files.some((f) => f.endsWith(".htm") || f.endsWith(".html"))) {
+        resolvedContentPath = avevaPath;
+        return avevaPath;
+      }
+    } catch {
+      // Not a directory or permission error
+    }
+  }
+
+  // Search within the path
+  const found = findContentFolder(avevaPath);
+  if (found) {
+    resolvedContentPath = found;
+    return found;
+  }
+
+  return null;
+}
+
+/**
+ * Resolve the help root path (folder containing Default.htm)
+ */
+export function resolveHelpRoot(
+  cfg: () => vscode.WorkspaceConfiguration,
+): string | null {
+  if (resolvedHelpRoot) return resolvedHelpRoot;
+
+  const avevaPath =
+    (cfg().get("cicode.avevaPath") as string | undefined)?.trim() || "";
+
+  if (!avevaPath) return null;
+
+  const found = findHelpRoot(avevaPath);
+  if (found) {
+    resolvedHelpRoot = found;
+    return found;
+  }
+
+  return null;
+}
+
+/**
+ * Clear cached paths (call when settings change)
+ */
+export function clearPathCache(): void {
+  resolvedContentPath = null;
+  resolvedHelpRoot = null;
+}
 
 function asMap(
   obj: Record<string, BuiltinFunction> | undefined | null,
@@ -138,14 +265,12 @@ export async function rebuildBuiltins(
   context: vscode.ExtensionContext,
   cfg: () => vscode.WorkspaceConfiguration,
 ): Promise<Map<string, BuiltinFunction>> {
-  const override =
-    (cfg().get("cicode.builtins.path") as string | undefined)?.trim() || "";
-  const inputDir =
-    override ||
-    "C:/Program Files (x86)/AVEVA Plant SCADA/Bin/Help/SCADA Help/Subsystems/CicodeReferenceCitectHTML/Content";
+  // Clear cache to force re-resolution
+  clearPathCache();
 
+  const inputDir = resolveContentPath(cfg);
   const out: Record<string, BuiltinFunction> = {};
-  if (!fs.existsSync(inputDir)) return save(context, out);
+  if (!inputDir || !fs.existsSync(inputDir)) return save(context, out);
 
   for (const file of fs.readdirSync(inputDir)) {
     const ext = path.extname(file).toLowerCase();
@@ -182,7 +307,7 @@ export async function rebuildBuiltins(
         doc: summary,
         returns: returnsDoc,
         paramDocs,
-        helpPath: path.join(inputDir, file),
+        helpPath: file, // Just store filename, construct full path at runtime
       };
     } catch (e) {
       console.error("builtin parse fail", file, e);

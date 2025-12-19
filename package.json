@@ -2,7 +2,7 @@
   "name": "cicode-vscode-extension",
   "displayName": "Cicode Syntax Highlighting",
   "description": "Syntax highlighting and navigation for Cicode",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "publisher": "MSkjel",
   "repository": {
     "type": "git",
@@ -77,10 +77,10 @@
           ],
           "description": "Glob patterns to exclude from indexing."
         },
-        "cicode.builtins.path": {
+        "cicode.avevaPath": {
           "type": "string",
-          "default": "",
-          "description": "Optional override path to builtins help HTML folder."
+          "default": "C:/Program Files (x86)/AVEVA Plant SCADA",
+          "description": "Path to AVEVA Plant SCADA installation folder. The extension will automatically find the help files."
         },
         "cicode.hover.showHelpLink": {
           "type": "boolean",
