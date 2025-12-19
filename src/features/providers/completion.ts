@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
 import { leftWordRangeAt } from "../../shared/textUtils";
+import { formatScopeType } from "../../shared/utils";
 
 const CI_KEYWORDS = [
   "function",
@@ -105,21 +106,16 @@ export function makeCompletion(
       }
 
       const file = document.uri.fsPath;
-      const current = (indexer as any).findEnclosingFunction(
-        document,
-        position,
-      );
+      const current = indexer.findEnclosingFunction(document, position);
       const seen = new Set<string>();
-      const pushVar = (v: any) => {
+      const pushVar = (v: { name: string; type: string; scopeType: string; scopeId: string }) => {
         const k = `${v.name}|${v.scopeType}|${v.scopeId}`;
         if (seen.has(k)) return;
         seen.add(k);
-        const detail =
-          v.scopeType === "global"
-            ? `Global ${v.type}`
-            : v.scopeType === "module"
-              ? `Module ${v.type}`
-              : `Local ${v.type}`;
+        const detail = formatScopeType(v.scopeType as any, {
+          includeType: true,
+          type: v.type,
+        });
         const it = new vscode.CompletionItem(
           v.name,
           vscode.CompletionItemKind.Variable,
@@ -133,7 +129,7 @@ export function makeCompletion(
         for (const v of indexer.getVariablesByPredicate(
           (x) =>
             x.scopeType === "local" &&
-            x.scopeId === (indexer as any).localScopeId(file, current.name),
+            x.scopeId === indexer.localScopeId(file, current.name),
         ))
           pushVar(v);
       }

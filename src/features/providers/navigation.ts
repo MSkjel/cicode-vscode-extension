@@ -5,7 +5,9 @@ import {
   inSpan,
   cleanParamName,
 } from "../../shared/textUtils";
+import { countArgsTopLevel } from "../../shared/parseHelpers";
 import { KEYWORDS_WITH_PAREN } from "../../shared/constants";
+import { escapeRegExp, formatScopeType } from "../../shared/utils";
 
 export function makeNavProviders(indexer: Indexer): vscode.Disposable[] {
   const lang = { language: "cicode" } as const;
@@ -54,12 +56,7 @@ export function makeNavProviders(indexer: Indexer): vscode.Disposable[] {
 
         const v = indexer.resolveVariableAt(document, position, w);
         if (v) {
-          const scope =
-            v.scopeType === "global"
-              ? "global"
-              : v.scopeType === "module"
-                ? "module"
-                : `local (${v.scopeId.split("::").pop()})`;
+          const scope = formatScopeType(v.scopeType, { scopeId: v.scopeId });
           const md =
             "```cicode\n" + `${v.type} ${v.name} // ${scope}` + "\n```";
           return new vscode.Hover(new vscode.MarkdownString(md));
@@ -85,7 +82,7 @@ export function makeNavProviders(indexer: Indexer): vscode.Disposable[] {
             : text;
           const baseOffset = range ? doc.offsetAt(range.start) : 0;
           const ignore = buildIgnoreSpans(searchText);
-          const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const escaped = escapeRegExp(word);
           const re = new RegExp(`\\b${escaped}\\b`, "g");
 
           let m: RegExpExecArray | null;
@@ -186,17 +183,31 @@ export function makeNavProviders(indexer: Indexer): vscode.Disposable[] {
           sigHelp.signatures = [sigInfo];
           sigHelp.activeSignature = 0;
 
-          const lineText = document.lineAt(position.line).text;
-          const openIdx = lineText.lastIndexOf("(", position.character - 1);
-          const argText =
-            openIdx >= 0
-              ? lineText.substring(openIdx + 1, position.character)
-              : "";
-          const commaCount = (argText.match(/,/g) || []).length;
+          // Use proper argument counting that handles strings, comments, and nested parens
+          const cursorPos = document.offsetAt(position);
+          const argsStart = funcPos + 1; // Position after '('
+          const argsText = text.slice(argsStart, cursorPos);
+          const ignore = buildIgnoreSpans(argsText);
+
+          // Count completed arguments (commas at top level)
+          const argCount = countArgsTopLevel(argsText, 0, argsText.length, ignore);
+
+          // activeParameter is the current argument index (0-based)
+          // If we have N completed args, we're on argument N (0-indexed)
           sigHelp.activeParameter = Math.min(
-            commaCount,
+            Math.max(0, argCount > 0 ? argCount - 1 : 0),
             Math.max((entry.params || []).length - 1, 0),
           );
+
+          // Check if cursor is after a comma (starting a new argument)
+          const trimmedEnd = argsText.trimEnd();
+          if (trimmedEnd.endsWith(",")) {
+            sigHelp.activeParameter = Math.min(
+              argCount,
+              Math.max((entry.params || []).length - 1, 0),
+            );
+          }
+
           return sigHelp;
         },
       },

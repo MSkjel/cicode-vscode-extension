@@ -67,23 +67,18 @@ export function makeSymbols(indexer: Indexer, workspace = false) {
       document: vscode.TextDocument,
       _token: vscode.CancellationToken,
     ) {
-      const text = document.getText();
-      const regex = /(^|\n)\s*(?:\w+\s+)*function\s+(\w+)\s*\(/gim;
-      let m: RegExpExecArray | null;
+      // Use the indexer's function ranges for accurate symbol detection
+      // This handles edge cases like comments after FUNCTION keyword
+      const funcs = indexer.getFunctionRanges(document.uri.fsPath);
       const syms: vscode.SymbolInformation[] = [];
 
-      while ((m = regex.exec(text))) {
-        const name = m[2];
-        const off = m.index;
-        const before = text.substring(0, off);
-        const line = before.split(/\r?\n/).length - 1;
-        const col = off - (before.lastIndexOf("\n") + 1);
+      for (const f of funcs) {
         syms.push(
           new vscode.SymbolInformation(
-            name,
+            f.name,
             vscode.SymbolKind.Function,
-            "",
-            new vscode.Location(document.uri, new vscode.Position(line, col)),
+            f.returnType || "",
+            f.location,
           ),
         );
       }

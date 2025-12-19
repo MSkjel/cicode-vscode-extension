@@ -6,30 +6,24 @@ export function makeSemanticTokens(indexer: Indexer) {
     ["function", "variable", "builtin"],
     ["global", "local", "parameter", "module"],
   );
+
   const provider: vscode.DocumentSemanticTokensProvider = {
     provideDocumentSemanticTokens(doc: vscode.TextDocument) {
       const builder = new vscode.SemanticTokensBuilder(legend);
       const text = doc.getText();
 
-      const re = /(^|\n)\s*(?:\w+\s+)*function\s+(\w+)\s*\(/gim;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(text))) {
-        const name = m[2];
-        const off = m.index + m[0].indexOf(name);
-        const pos = doc.positionAt(off);
-        builder.push(
-          new vscode.Range(pos, pos.translate(0, name.length)),
-          "function",
-          [],
-        );
+      // Use indexer data for function definitions (handles edge cases like comments after FUNCTION)
+      for (const f of indexer.getFunctionRanges(doc.uri.fsPath)) {
+        builder.push(f.location.range, "function", []);
       }
 
-      const call = /\b([A-Za-z_]\w*)\s*\(/g;
-      while ((m = call.exec(text))) {
+      // Highlight builtin function calls
+      const callRe = /\b([A-Za-z_]\w*)\s*\(/g;
+      let m: RegExpExecArray | null;
+      while ((m = callRe.exec(text))) {
         const name = m[1];
         if (indexer.getAllFunctions().get(name.toLowerCase())?.helpPath) {
-          const off = m.index;
-          const pos = doc.positionAt(off);
+          const pos = doc.positionAt(m.index);
           builder.push(
             new vscode.Range(pos, pos.translate(0, name.length)),
             "builtin",
@@ -37,8 +31,10 @@ export function makeSemanticTokens(indexer: Indexer) {
           );
         }
       }
+
       return builder.build();
     },
   };
+
   return { provider, legend };
 }

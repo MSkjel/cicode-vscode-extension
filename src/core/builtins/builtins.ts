@@ -98,22 +98,20 @@ function extractParamDocs($: cheerio.CheerioAPI): Record<string, string> {
     if (!paramDocs[name]) paramDocs[name] = desc;
   };
 
-  const $ps = $("p");
+  const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-  $ps.each((i, el) => {
+  $("p").each((_, el) => {
     const $p = $(el);
 
     if ($p.hasClass("pArgBody")) {
       const em = $p.find("em.cEmphasis, i").first();
       if (em.length) {
         const paramName = em.text();
-        let remainder = $p.text();
         const label = new RegExp(
-          "^\\s*" + escapeRegex(em.text()) + "\\s*[:\\-–—]?\\s*",
+          "^\\s*" + escapeRe(paramName) + "\\s*[:\\-–—]?\\s*",
           "i",
         );
-        remainder = squish(remainder.replace(label, ""));
-        add(paramName, remainder);
+        add(paramName, squish($p.text().replace(label, "")));
         return;
       }
     }
@@ -134,10 +132,6 @@ function extractParamDocs($: cheerio.CheerioAPI): Record<string, string> {
   });
 
   return paramDocs;
-}
-
-function escapeRegex(s: string) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export async function rebuildBuiltins(
