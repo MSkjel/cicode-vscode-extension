@@ -14,6 +14,7 @@ export function buildDocSkeleton(opts: {
     .filter(Boolean);
 
   const lines: string[] = [];
+  lines.push(`/// <function name="${name}">`);
   lines.push("/// <summary>");
   lines.push(`/// TODO summary`);
   lines.push("/// </summary>");
@@ -25,6 +26,7 @@ export function buildDocSkeleton(opts: {
   if (returnType && returnType.toUpperCase() !== "VOID") {
     lines.push("/// <returns>TODO</returns>");
   }
+  lines.push("/// </function>");
 
   return lines.join("\n") + "\n";
 }
