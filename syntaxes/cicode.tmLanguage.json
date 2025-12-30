@@ -7,33 +7,15 @@
       "name": "comment.block.documentation.function.cicode",
       "begin": "^(\\s*///\\s*)(<)(function)(?:\\s+(name)(\\s*=\\s*)(\")([^\"]+)(\"))?(>)\\s*$",
       "beginCaptures": {
-        "1": {
-          "name": "punctuation.definition.comment.cicode"
-        },
-        "2": {
-          "name": "punctuation.definition.tag.open.xml.cicode"
-        },
-        "3": {
-          "name": "entity.name.tag.doc.xml.cicode"
-        },
-        "4": {
-          "name": "entity.other.attribute-name.doc.xml.cicode"
-        },
-        "5": {
-          "name": "punctuation.separator.key-value.xml.cicode"
-        },
-        "6": {
-          "name": "punctuation.definition.string.begin.xml.cicode"
-        },
-        "7": {
-          "name": "entity.name.function.cicode"
-        },
-        "8": {
-          "name": "punctuation.definition.string.end.xml.cicode"
-        },
-        "9": {
-          "name": "punctuation.definition.tag.open.xml.cicode"
-        }
+        "1": { "name": "punctuation.definition.comment.cicode" },
+        "2": { "name": "punctuation.definition.tag.open.xml.cicode" },
+        "3": { "name": "entity.name.tag.doc.xml.cicode" },
+        "4": { "name": "entity.other.attribute-name.doc.xml.cicode" },
+        "5": { "name": "punctuation.separator.key-value.xml.cicode" },
+        "6": { "name": "punctuation.definition.string.begin.xml.cicode" },
+        "7": { "name": "entity.name.function.cicode" },
+        "8": { "name": "punctuation.definition.string.end.xml.cicode" },
+        "9": { "name": "punctuation.definition.tag.open.xml.cicode" }
       },
       "end": "^(\\s*///\\s*)(</)(function)(>)\\s*$",
       "endCaptures": {
@@ -60,45 +42,19 @@
       "name": "comment.line.documentation.cicode",
       "match": "^(\\s*///\\s*)(<)(summary|param|returns)(?:\\s+(name)(\\s*=\\s*)(\")(\\w+)(\"))?(\\s*)(>)([^<]*?)(</)(\\3)(>)",
       "captures": {
-        "1": {
-          "name": "punctuation.definition.comment.cicode"
-        },
-        "2": {
-          "name": "punctuation.definition.tag.open.xml.cicode"
-        },
-        "3": {
-          "name": "entity.name.tag.doc.xml.cicode"
-        },
-        "4": {
-          "name": "entity.other.attribute-name.doc.xml.cicode"
-        },
-        "5": {
-          "name": "punctuation.separator.key-value.xml.cicode"
-        },
-        "6": {
-          "name": "punctuation.definition.string.begin.xml.cicode"
-        },
-        "7": {
-          "name": "variable.parameter.doc.xml.cicode"
-        },
-        "8": {
-          "name": "punctuation.definition.string.end.xml.cicode"
-        },
-        "10": {
-          "name": "punctuation.definition.tag.open.xml.cicode"
-        },
-        "11": {
-          "name": "comment.doc.text.cicode"
-        },
-        "12": {
-          "name": "punctuation.definition.tag.close.xml.cicode"
-        },
-        "13": {
-          "name": "entity.name.tag.doc.xml.cicode"
-        },
-        "14": {
-          "name": "punctuation.definition.tag.close.xml.cicode"
-        }
+        "1": { "name": "punctuation.definition.comment.cicode" },
+        "2": { "name": "punctuation.definition.tag.open.xml.cicode" },
+        "3": { "name": "entity.name.tag.doc.xml.cicode" },
+        "4": { "name": "entity.other.attribute-name.doc.xml.cicode" },
+        "5": { "name": "punctuation.separator.key-value.xml.cicode" },
+        "6": { "name": "punctuation.definition.string.begin.xml.cicode" },
+        "7": { "name": "variable.parameter.doc.xml.cicode" },
+        "8": { "name": "punctuation.definition.string.end.xml.cicode" },
+        "10": { "name": "punctuation.definition.tag.open.xml.cicode" },
+        "11": { "name": "comment.doc.text.cicode" },
+        "12": { "name": "punctuation.definition.tag.close.xml.cicode" },
+        "13": { "name": "entity.name.tag.doc.xml.cicode" },
+        "14": { "name": "punctuation.definition.tag.close.xml.cicode" }
       }
     },
     {
