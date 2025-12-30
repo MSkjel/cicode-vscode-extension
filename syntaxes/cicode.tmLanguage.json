@@ -19,18 +19,10 @@
       },
       "end": "^(\\s*///\\s*)(</)(function)(>)\\s*$",
       "endCaptures": {
-        "1": {
-          "name": "punctuation.definition.comment.cicode"
-        },
-        "2": {
-          "name": "punctuation.definition.tag.close.xml.cicode"
-        },
-        "3": {
-          "name": "entity.name.tag.doc.xml.cicode"
-        },
-        "4": {
-          "name": "punctuation.definition.tag.close.xml.cicode"
-        }
+        "1": { "name": "punctuation.definition.comment.cicode" },
+        "2": { "name": "punctuation.definition.tag.close.xml.cicode" },
+        "3": { "name": "entity.name.tag.doc.xml.cicode" },
+        "4": { "name": "punctuation.definition.tag.close.xml.cicode" }
       },
       "patterns": [
         {
