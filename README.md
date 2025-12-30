@@ -88,12 +88,14 @@ Full syntax highlighting for `.ci` files including:
 The extension supports XML-style doc comments for documenting your functions:
 
 ```cicode
-/// <function name="CalculateArea">
-/// <summary>Calculates the area of a rectangle.</summary>
-/// <param name="width">The width of the rectangle.</param>
-/// <param name="height">The height of the rectangle.</param>
-/// <returns>The calculated area.</returns>
-/// </function>
+/**
+<function name="CalculateArea">
+ <summary>Calculates the area of a rectangle.</summary>
+ <param name="width">The width of the rectangle.</param>
+ <param name="height">The height of the rectangle.</param>
+ <returns>The calculated area.</returns>
+</function>
+**/
 FUNCTION CalculateArea(REAL width, REAL height)
     RETURN width * height;
 END
