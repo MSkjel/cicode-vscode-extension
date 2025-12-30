@@ -355,6 +355,80 @@ function normalizeDocText(s: string): string {
 
   return out.join("\n\n").trim();
 }
+export function extractSlashDoubleStarDoc(
+  text: string,
+  headerStart: number,
+): string[] {
+  // normalize once
+  const norm = text.replace(/\r\n?/g, "\n");
+  // adjust headerStart to the normalized string
+  const normHeaderStart = text
+    .slice(0, headerStart)
+    .replace(/\r\n?/g, "\n").length;
+  const lines = norm.split("\n");
+
+  let idx = 0,
+    off = 0;
+  while (idx < lines.length && off + lines[idx].length + 1 <= normHeaderStart) {
+    off += lines[idx].length + 1;
+    idx++;
+  }
+  const headerLine = Math.max(0, Math.min(lines.length - 1, idx));
+
+  const isBlank = (s: string) => /^\s*$/.test(s);
+  const containsOpeningDocComment = (s: string) => /^\s*\/\*\*/.test(s); // looks for /**
+  const containsClosingDocComment = (s: string) => /\*\*\/\s*?$/.test(s); // looks for **/
+  /* const isTriple = (s: string) => /^\s*\/\/\//.test(s); */
+
+  const out: string[] = [];
+  let i = headerLine - 1;
+  let docEndLinei = 0;
+  let docStartLinei = 0;
+
+  while (i >= 0 && isBlank(lines[i])) i--;
+
+  if (i < 0 || !containsClosingDocComment(lines[i])) return [];
+
+  const collected: number[] = [];
+  while (
+    i >= 0 &&
+    (!containsOpeningDocComment(lines[i]) || isBlank(lines[i]))
+  ) {
+    collected.push(i);
+    i--;
+  }
+  collected.reverse();
+
+  let pendingBlank = false;
+  for (const k of collected) {
+    const L = lines[k];
+    if (!isBlank(L)) {
+      if (pendingBlank && out.length && out[out.length - 1] !== "")
+        out.push("");
+      pendingBlank = false;
+      if (
+        isBlank(L.replace(/\*\*\/\s*/, "")) ||
+        isBlank(L.replace(/\s*\/\*\*/, ""))
+      ) {
+        pendingBlank = true;
+      }
+      if (containsClosingDocComment(L)) {
+        out.push(L.replace(/\s*\*\*\/\s*/, "").trim());
+      } else if (containsOpeningDocComment(L)) {
+        out.push(L.replace(/\s*\/\*\*\s*/, "").trim());
+      } else {
+        out.push(L);
+      }
+    } else if (isBlank(L)) {
+      pendingBlank = true;
+    }
+  }
+
+  while (out.length && out[0] === "") out.shift();
+  while (out.length && out[out.length - 1] === "") out.pop();
+
+  return out;
+}
 
 export function extractLeadingTripleSlashDoc(
   text: string,

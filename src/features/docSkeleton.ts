@@ -14,19 +14,23 @@ export function buildDocSkeleton(opts: {
     .filter(Boolean);
 
   const lines: string[] = [];
-  lines.push(`/// <function name="${name}">`);
-  lines.push("/// <summary>");
-  lines.push(`/// TODO summary`);
-  lines.push("/// </summary>");
+  lines.push("/**");
+  lines.push(`<function name="${name}">`);
+
+  lines.push(" <summary>");
+  lines.push(`  TODO summary`);
+  lines.push(" </summary>");
 
   for (const p of params) {
-    lines.push(`/// <param name="${p}">TODO</param>`);
+    lines.push(` <param name="${p}">TODO</param>`);
   }
 
   if (returnType && returnType.toUpperCase() !== "VOID") {
-    lines.push("/// <returns>TODO</returns>");
+    lines.push(" <returns>TODO</returns>");
   }
-  lines.push("/// </function>");
+
+  lines.push("</function>");
+  lines.push("**/");
 
   return lines.join("\n") + "\n";
 }

@@ -6,6 +6,7 @@ import {
   buildIgnoreSpans,
   inSpan,
   extractLeadingTripleSlashDoc,
+  extractSlashDoubleStarDoc,
   parseXmlDocLines,
 } from "../../shared/textUtils";
 import { getBuiltins } from "../builtins/builtins";
@@ -311,7 +312,10 @@ export class Indexer {
       let paramDocs: Record<string, string> | undefined;
       let returnsDoc: string | undefined;
 
-      const docLines = extractLeadingTripleSlashDoc(text, headerStart);
+      let docLines = extractSlashDoubleStarDoc(text, headerStart);
+      if (!docLines.length) {
+        docLines = extractLeadingTripleSlashDoc(text, headerStart);
+      }
       if (docLines.length) {
         const parsed = parseXmlDocLines(docLines);
         docText = parsed.summary || undefined;
