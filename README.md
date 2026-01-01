@@ -85,16 +85,14 @@ Full syntax highlighting for `.ci` files including:
 
 ## Doc Comments
 
-The extension supports XML-style doc comments for documenting your functions:
+The extension supports [Doxygen XML](https://www.doxygen.nl/manual/xmlcmds.html) doc comments for documenting your functions:
 
 ```cicode
 /**
-<function name="CalculateArea">
- <summary>Calculates the area of a rectangle.</summary>
- <param name="width">The width of the rectangle.</param>
- <param name="height">The height of the rectangle.</param>
- <returns>The calculated area.</returns>
-</function>
+<summary>Calculates the area of a rectangle.</summary>
+<param name="width">The width of the rectangle.</param>
+<param name="height">The height of the rectangle.</param>
+<returns>The calculated area.</returns>
 **/
 FUNCTION CalculateArea(REAL width, REAL height)
     RETURN width * height;
