@@ -4,6 +4,39 @@
   "fileTypes": ["ci"],
   "patterns": [
     {
+      "begin": "/\\*\\*",
+      "end": "\\*\\*/",
+      "name": "comment.block.xml-documentation.cicode",
+      "patterns": [
+        {
+          "contentName": "meta.embedded.block.xml",
+          "patterns": [
+            {
+              "name": "entity.name.tag.doc.xml.cicode",
+              "match": "</?[a-zA-Z0-9:_-]+"
+            },
+            {
+              "name": "entity.name.tag.doc.xml.cicode",
+              "match": "\\s*/?>"
+            },
+            {
+              "name": "entity.other.attribute-name.xml",
+              "match": "\\b[a-zA-Z0-9:_-]+(?=\\=)"
+            },
+
+            {
+              "name": "variable.parameter.doc.xml.cicode",
+              "match": "\"[^\"]*\""
+            },
+            {
+              "name": "variable.parameter.doc.xml.cicode",
+              "match": "'[^']*'"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "comment.line.documentation.cicode",
       "match": "^(\\s*///\\s*)(<)(summary|param|returns)(?:\\s+(name)(\\s*=\\s*)(\")(\\w+)(\"))?(\\s*)(>)([^<]*?)(</)(\\3)(>)",
       "captures": {
@@ -181,8 +214,8 @@
       "name": "comment.line.cicode"
     },
     {
-      "begin": "/\\*",
-      "end": "\\*/",
+      "begin": "/\\*(?!\\*)",
+      "end": "(?<!\\*)\\*\/",
       "name": "comment.block.cicode"
     },
     {
