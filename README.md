@@ -13,7 +13,7 @@ Full syntax highlighting for `.ci` files including:
 - Variables and type annotations
 - Strings with escape sequences
 - Comments (line `//`, `!`, `|` and block `/* */`)
-- Doc comments (`///` with XML tags)
+- Doc comments ([Doxygen](https://www.doxygen.nl/manual/xmlcmds.html) XML commands with `/** **/` and `///` style)
 - Format picture specifiers (`:###,##0.00`)
 
 ### IntelliSense
@@ -89,11 +89,11 @@ The extension supports [Doxygen XML](https://www.doxygen.nl/manual/xmlcmds.html)
 
 ```cicode
 /**
-<summary>Calculates the area of a rectangle.</summary>
-<param name="width">The width of the rectangle.</param>
-<param name="height">The height of the rectangle.</param>
-<returns>The calculated area.</returns>
-**/
+ * <summary>Calculates the area of a rectangle.</summary>
+ * <param name="width">The width of the rectangle.</param>
+ * <param name="height">The height of the rectangle.</param>
+ * <returns>The calculated area.</returns>
+ **/
 FUNCTION CalculateArea(REAL width, REAL height)
     RETURN width * height;
 END
