@@ -16,19 +16,19 @@ export function buildDocSkeleton(opts: {
   const lines: string[] = [];
   lines.push("/**");
 
-  lines.push("<summary>");
-  lines.push(` TODO summary`);
-  lines.push("</summary>");
+  lines.push(" * <summary>");
+  lines.push(` *  TODO summary`);
+  lines.push(" * </summary>");
 
   for (const p of params) {
-    lines.push(`<param name="${p}">TODO</param>`);
+    lines.push(` * <param name="${p}">TODO</param>`);
   }
 
   if (returnType && returnType.toUpperCase() !== "VOID") {
-    lines.push("<returns>TODO</returns>");
+    lines.push(" * <returns>TODO</returns>");
   }
 
-  lines.push("**/");
+  lines.push(" **/");
 
   return lines.join("\n") + "\n";
 }
@@ -54,7 +54,7 @@ export async function insertDocSkeletonAtCursor(
 
   const headerLine = fr.headerPos.line;
   const prevLineText = headerLine > 0 ? doc.lineAt(headerLine - 1).text : "";
-  if (/^\s*\/\/\//.test(prevLineText)) {
+  if (/^\s*\/\/\//.test(prevLineText) || /^\s*\*+\//.test(prevLineText)) {
     vscode.window.showInformationMessage("Cicode: Doc block already present.");
     return false;
   }
