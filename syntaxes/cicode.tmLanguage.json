@@ -167,7 +167,7 @@
       "beginCaptures": {
         "0": { "name": "keyword.operator.format.cicode" }
       },
-      "end": "(?=\\s*(?:;|,|\\)|\\]|$))",
+      "end": "(?=\\s*(?:;|,|\\)|\\]|\\+\\s*[\"']|$))",
       "patterns": [
         { "match": "\\G\\s+", "name": "punctuation.whitespace.cicode" },
         {
