@@ -55,6 +55,34 @@
       {
         "command": "cicode.insertDocSkeleton",
         "title": "Cicode: Insert Doc Skeleton for Function"
+      },
+      {
+        "command": "cicode.createNewFile",
+        "title": "New File",
+        "icon": {
+          "dark": "src/media/new-file-for-dark.svg",
+          "light": "src/media/new-file-for-light.svg"
+        }
+      },
+      {
+        "command": "vscode.open",
+        "title": "Open"
+      },
+      {
+        "command": "copyFilePath",
+        "title": "Copy as path"
+      },
+      {
+        "command": "revealInExplorer",
+        "title": "Reveal in File Explorer"
+      },
+      {
+        "command": "renameFile",
+        "title": "Rename..."
+      },
+      {
+        "command": "deleteFile",
+        "title": "Delete"
       }
     ],
     "keybindings": [
@@ -149,6 +177,55 @@
           "description": "Function names to exclude from undefined and argument count checks (case-insensitive)."
         }
       }
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "cicodeExplorer",
+          "name": "Cicode Explorer",
+          "icon": ""
+        }
+      ]
+    },
+    "menus": {
+      "view/item/context": [
+        {
+          "when": "view == cicodeExplorer && viewItem == file",
+          "command": "vscode.open",
+          "group": "1_open@1"
+        },
+        {
+          "when": "view == cicodeExplorer && viewItem == file",
+          "command": "revealInExplorer",
+          "group": "1_open@2"
+        },
+        {
+          "when": "view == cicodeExplorer && viewItem == file",
+          "command": "renameFile",
+          "group": "2_edit"
+        },
+        {
+          "when": "view == cicodeExplorer && viewItem == file",
+          "command": "copyFilePath",
+          "group": "3_misc"
+        },
+        {
+          "when": "view == cicodeExplorer && viewItem == file",
+          "command": "deleteFile",
+          "group": "4_delete"
+        },
+        {
+          "when": "view == cicodeExplorer && viewItem == folder",
+          "command": "copyFilePath"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "cicode.createNewFile",
+          "when": "view == cicodeExplorer",
+          "group": "navigation"
+        }
+      ]
     }
   },
   "scripts": {

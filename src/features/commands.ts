@@ -113,6 +113,43 @@ export function registerCommands(
     }),
   );
 
+  cmds.push(
+    vscode.commands.registerCommand("cicode.createNewFile", async() => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) {
+        return;
+      }
+
+      while (true) {
+        const fileName = await vscode.window.showInputBox({
+          prompt: "Enter new Cicode filename"
+        });
+
+        // Return if ESC pressed
+        if (fileName === undefined) {
+          return;
+        }
+
+        // Prompt again if given file name is empty
+        if (fileName.trim() === "") {
+          vscode.window.showErrorMessage("Empty filename is not allowed");
+          continue;
+        }
+
+        const fileUri = vscode.Uri.joinPath(folder.uri, fileName);
+        try {
+          await vscode.workspace.fs.stat(fileUri);
+          vscode.window.showErrorMessage(
+            `File "${fileName}" already exists. Please input another name.`
+          );
+        } catch {
+          await vscode.workspace.fs.writeFile(fileUri, new Uint8Array());
+          await vscode.window.showTextDocument(fileUri);
+          return;
+        }
+      }
+    }
+  ));
   context.subscriptions.push(...cmds);
   return cmds;
 }
