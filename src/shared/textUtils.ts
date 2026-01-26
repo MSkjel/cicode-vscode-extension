@@ -378,7 +378,6 @@ export function extractSlashDoubleStarDoc(
   const isBlank = (s: string) => /^\s*$/.test(s);
   const containsOpeningDocComment = (s: string) => /^\s*\/\*\*/.test(s); // looks for /**
   const containsClosingDocComment = (s: string) => /\*\*\/\s*?$/.test(s); // looks for **/
-  /* const isTriple = (s: string) => /^\s*\/\/\//.test(s); */
 
   const out: string[] = [];
   let i = headerLine - 1;
@@ -392,32 +391,42 @@ export function extractSlashDoubleStarDoc(
   const collected: number[] = [];
   while (
     i >= 0 &&
-    (!containsOpeningDocComment(lines[i]) || isBlank(lines[i]))
+    (!containsOpeningDocComment(lines[i]) || isBlank(lines[i]))/* hmmm, this may break if `/**` is on the same line as the opening tag  */
   ) {
     collected.push(i);
     i--;
   }
   collected.reverse();
 
+  const containsStartingStar = (s: string) => /^\s*\*/.test(s); // Checks if line starts with a * - if it does, we should remove it
+
   let pendingBlank = false;
   for (const k of collected) {
     const L = lines[k];
     if (!isBlank(L)) {
-      if (pendingBlank && out.length && out[out.length - 1] !== "")
+      if (pendingBlank && out.length && out[out.length - 1] !== "")/* this might be worthwile to move into switch statement below, not sure */
         out.push("");
       pendingBlank = false;
-      if (
-        isBlank(L.replace(/\*\*\/\s*/, "")) ||
-        isBlank(L.replace(/\s*\/\*\*/, ""))
-      ) {
-        pendingBlank = true;
-      }
-      if (containsClosingDocComment(L)) {
-        out.push(L.replace(/\s*\*\*\/\s*/, "").trim());
-      } else if (containsOpeningDocComment(L)) {
-        out.push(L.replace(/\s*\/\*\*\s*/, "").trim());
-      } else {
-        out.push(L);
+      switch(true)
+      {
+        case containsClosingDocComment(L):
+          if(isBlank(L.replace(/\*\*\/\s*/, ""))) {
+            pendingBlank = true;
+          }
+          out.push(L.replace(/\s*\*\*\/\s*/, "").trim());
+          break;
+        case containsOpeningDocComment(L):
+          if(isBlank(L.replace(/\s*\/\*\*/, ""))){
+            pendingBlank = true;
+          }
+          out.push(L.replace(/\s*\/\*\*\s*/, "").trim());
+          break;
+        case containsStartingStar(L):
+          out.push(L.replace(/^\s*\*/, "").trim());
+          break;
+        default:
+          out.push(L);
+          break;
       }
     } else if (isBlank(L)) {
       pendingBlank = true;
