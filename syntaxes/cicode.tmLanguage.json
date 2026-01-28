@@ -122,7 +122,8 @@
           "name": "meta.function.header.cicode",
           "begin": "^(?i)\\s*(?!if\\b|while\\b|for\\b|repeat\\b|try\\b|select\\b|case\\b)(\\w+)\\s*\\(",
           "beginCaptures": { "1": { "name": "entity.name.function.cicode" } },
-          "end": "$"
+          "end": "$",
+          "patterns": [{ "include": "$self" }]
         },
         { "include": "#controlBlocks" },
         { "include": "$self" }
