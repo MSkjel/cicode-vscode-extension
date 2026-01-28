@@ -67,18 +67,24 @@ export function makeSymbols(indexer: Indexer, workspace = false) {
       document: vscode.TextDocument,
       _token: vscode.CancellationToken,
     ) {
-      // Use the indexer's function ranges for accurate symbol detection
-      // This handles edge cases like comments after FUNCTION keyword
+      // Return DocumentSymbol (not SymbolInformation) so that sticky scroll
+      // and the outline view get proper full-scope ranges.
       const funcs = indexer.getFunctionRanges(document.uri.fsPath);
-      const syms: vscode.SymbolInformation[] = [];
+      const syms: vscode.DocumentSymbol[] = [];
 
       for (const f of funcs) {
+        // Full range: from FUNCTION keyword through END
+        const fullRange = new vscode.Range(f.headerPos, f.bodyRange.end);
+        // Selection range: the function name itself
+        const selRange = f.location.range;
+
         syms.push(
-          new vscode.SymbolInformation(
+          new vscode.DocumentSymbol(
             f.name,
-            vscode.SymbolKind.Function,
             f.returnType || "",
-            f.location,
+            vscode.SymbolKind.Function,
+            fullRange,
+            selRange,
           ),
         );
       }
@@ -86,11 +92,12 @@ export function makeSymbols(indexer: Indexer, workspace = false) {
       for (const v of indexer.getVariablesInFile(document.uri.fsPath)) {
         if (v.scopeType !== "local") {
           syms.push(
-            new vscode.SymbolInformation(
+            new vscode.DocumentSymbol(
               `${v.name}: ${v.type}`,
-              vscode.SymbolKind.Variable,
               v.scopeType === "global" ? "Global" : "Module",
-              v.location,
+              vscode.SymbolKind.Variable,
+              v.location.range,
+              v.location.range,
             ),
           );
         }

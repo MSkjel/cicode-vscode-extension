@@ -23,9 +23,26 @@ export function registerProviders(
   const refCache = new ReferenceCache(indexer, cfg);
   disposables.push(refCache);
 
-  disposables.push(
-    vscode.languages.registerDocumentSymbolProvider(lang, makeSymbols(indexer)),
+  let docSymReg = vscode.languages.registerDocumentSymbolProvider(
+    lang,
+    makeSymbols(indexer),
   );
+  disposables.push(docSymReg);
+
+  const onceIndexed = indexer.onIndexed((file) => {
+    if (file === undefined) {
+      // Full rebuild complete — re-register so VS Code re-requests symbols
+      // for already-open documents
+      docSymReg.dispose();
+      docSymReg = vscode.languages.registerDocumentSymbolProvider(
+        lang,
+        makeSymbols(indexer),
+      );
+      disposables.push(docSymReg);
+      onceIndexed.dispose();
+    }
+  });
+  disposables.push(onceIndexed);
   disposables.push(
     vscode.languages.registerWorkspaceSymbolProvider(
       makeSymbols(indexer, true),

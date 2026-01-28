@@ -143,16 +143,6 @@ export function makeNavProviders(
             const abs = baseOffset + m.index;
             if (inSpan(m.index, ignore)) continue;
 
-            const lineStart = text.lastIndexOf("\n", abs) + 1;
-            const lineEnd = text.indexOf("\n", abs);
-            const lineText = text.substring(
-              lineStart,
-              lineEnd === -1 ? text.length : lineEnd,
-            );
-            const commentIdx = lineText.indexOf("//");
-            const col = abs - lineStart;
-            if (commentIdx >= 0 && col >= commentIdx) continue;
-
             const start = doc.positionAt(abs);
             const end = doc.positionAt(abs + target.length);
             results.push(

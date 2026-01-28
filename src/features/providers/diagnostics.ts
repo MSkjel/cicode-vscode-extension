@@ -4,7 +4,6 @@ import { buildIgnoreSpans, inSpan, TYPE_RE } from "../../shared/textUtils";
 import { countArgsTopLevel, findMatchingParen } from "../../shared/parseHelpers";
 import { KEYWORDS_WITH_PAREN, CONTROL_KEYWORDS } from "../../shared/constants";
 import {
-  escapeRegExp,
   isCicodeDocument,
   computeParamBounds,
   getOptionalParamFlags,
@@ -389,24 +388,42 @@ export function makeDiagnostics(
       const localVars = indexer.getVariablesByPredicate(
         (v) => v.scopeType === "local" && v.scopeId === scopeId && !v.isParam,
       );
+      if (!localVars.length) continue;
 
+      // Build a lookup of variable names we care about
+      const varNames = new Map<string, typeof localVars>();
       for (const v of localVars) {
-        const safe = escapeRegExp(v.name);
-        const nameRe = new RegExp(`\\b${safe}\\b`, "gi");
-        let count = 0;
-        let m: RegExpExecArray | null;
-
-        while ((m = nameRe.exec(body))) {
-          const pos = bodyStartAbs + m.index;
-          if (!inSpan(pos, ignoreNoHeaders)) count++;
+        const key = v.name.toLowerCase();
+        let arr = varNames.get(key);
+        if (!arr) {
+          arr = [];
+          varNames.set(key, arr);
         }
+        arr.push(v);
+      }
 
-        // Variable appears only once (declaration) = unused
+      // Single pass: count occurrences of each variable name in the body
+      const counts = new Map<string, number>();
+      const wordRe = /\b[A-Za-z_]\w*\b/g;
+      let m: RegExpExecArray | null;
+      while ((m = wordRe.exec(body))) {
+        const key = m[0].toLowerCase();
+        if (!varNames.has(key)) continue;
+        const pos = bodyStartAbs + m.index;
+        if (inSpan(pos, ignoreNoHeaders)) continue;
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+
+      // Report variables with at most 1 occurrence (declaration only = unused)
+      for (const [key, vars] of varNames) {
+        const count = counts.get(key) || 0;
         if (count <= 1) {
-          collector.hint(
-            v.location.range,
-            `Variable '${v.name}' is declared but never used.`,
-          );
+          for (const v of vars) {
+            collector.hint(
+              v.location.range,
+              `Variable '${v.name}' is declared but never used.`,
+            );
+          }
         }
       }
     }
@@ -519,12 +536,18 @@ export function makeDiagnostics(
   // ---------------------------------------------------------------------------
   // Event subscriptions
   // ---------------------------------------------------------------------------
-  indexer.onIndexed(() => {
+  indexer.onIndexed((changedFile) => {
     indexingReady = true;
-    // Run diagnostics on all open cicode documents
-    for (const doc of vscode.workspace.textDocuments) {
-      if (isCicodeDocument(doc)) {
-        run(doc);
+    if (changedFile) {
+      // Single file changed — only re-run diagnostics for that file if open
+      const doc = vscode.workspace.textDocuments.find(
+        (d) => d.uri.fsPath === changedFile,
+      );
+      if (doc && isCicodeDocument(doc)) run(doc);
+    } else {
+      // Full rebuild — run diagnostics on all open cicode documents
+      for (const doc of vscode.workspace.textDocuments) {
+        if (isCicodeDocument(doc)) run(doc);
       }
     }
   });

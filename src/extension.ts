@@ -14,7 +14,6 @@ export async function activate(context: vscode.ExtensionContext) {
   await initBuiltins(context, cfg);
 
   indexer = new Indexer(context, cfg);
-  await indexer.buildAll();
 
   const disposables: vscode.Disposable[] = [];
   disposables.push(...registerProviders(context, indexer, cfg));
@@ -22,6 +21,9 @@ export async function activate(context: vscode.ExtensionContext) {
   disposables.push(makeStatusBar(indexer));
   disposables.push(...makeSideBar());
   context.subscriptions.push(...disposables);
+
+  // Build index in the background — providers handle the "not yet ready" state
+  indexer.buildAll();
 }
 
 export function deactivate() {}

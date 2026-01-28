@@ -63,27 +63,41 @@ function matchCasing(src: string, sample: string) {
 export function makeCompletion(
   indexer: Indexer,
 ): vscode.CompletionItemProvider {
+  // Cache function completion items — rebuilt only when the indexer changes
+  let cachedFuncItems: vscode.CompletionItem[] | null = null;
+
+  indexer.onIndexed(() => {
+    cachedFuncItems = null;
+  });
+
+  function getFunctionItems(): vscode.CompletionItem[] {
+    if (cachedFuncItems) return cachedFuncItems;
+    const items: vscode.CompletionItem[] = [];
+    for (const [key, f] of indexer.getAllFunctions()) {
+      const display = f.name || key;
+      const signature = `${f.returnType || "VOID"} ${display}(${(f.params || []).join(", ")})`;
+      const it = new vscode.CompletionItem(
+        display,
+        vscode.CompletionItemKind.Function,
+      );
+      it.insertText = display;
+      it.detail = signature;
+      it.sortText = `0_${display}`;
+      if (f.doc || f.returns) {
+        const md = new vscode.MarkdownString();
+        if (f.doc) md.appendMarkdown(f.doc);
+        if (f.returns) md.appendMarkdown(`\n\n**Returns:** ${f.returns}`);
+        it.documentation = md;
+      }
+      items.push(it);
+    }
+    cachedFuncItems = items;
+    return items;
+  }
+
   return {
     provideCompletionItems(document, position) {
-      const items: vscode.CompletionItem[] = [];
-      for (const [key, f] of indexer.getAllFunctions()) {
-        const display = f.name || key;
-        const signature = `${f.returnType || "VOID"} ${display}(${(f.params || []).join(", ")})`;
-        const it = new vscode.CompletionItem(
-          display,
-          vscode.CompletionItemKind.Function,
-        );
-        it.insertText = display;
-        it.detail = signature;
-        it.sortText = `0_${display}`;
-        if (f.doc || f.returns) {
-          const md = new vscode.MarkdownString();
-          if (f.doc) md.appendMarkdown(f.doc);
-          if (f.returns) md.appendMarkdown(`\n\n**Returns:** ${f.returns}`);
-          it.documentation = md;
-        }
-        items.push(it);
-      }
+      const items: vscode.CompletionItem[] = [...getFunctionItems()];
 
       const wr = leftWordRangeAt(document, position);
       const typed = wr ? document.getText(wr) : "";

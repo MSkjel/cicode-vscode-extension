@@ -98,9 +98,6 @@ export class ReferenceCache implements vscode.Disposable {
       }),
     );
 
-    // Kick off the initial build on the next tick (the indexer has already
-    // completed buildAll() before we were constructed).
-    setTimeout(() => this._buildAll(), 0);
   }
 
   // =========================================================================
@@ -264,17 +261,6 @@ export class ReferenceCache implements vscode.Disposable {
       const key = m[0].toLowerCase();
       if (!functionNames.has(key)) continue;
       if (inSpan(m.index, ignore)) continue;
-
-      // Skip inline // comments (mirrors navigation.ts logic)
-      const lineStart = text.lastIndexOf("\n", m.index) + 1;
-      const lineEnd = text.indexOf("\n", m.index);
-      const lineText = text.substring(
-        lineStart,
-        lineEnd === -1 ? text.length : lineEnd,
-      );
-      const commentIdx = lineText.indexOf("//");
-      const col = m.index - lineStart;
-      if (commentIdx >= 0 && col >= commentIdx) continue;
 
       symbolsFoundInFile.add(key);
 
