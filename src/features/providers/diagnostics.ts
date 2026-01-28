@@ -386,7 +386,7 @@ export function makeDiagnostics(
 
       const scopeId = indexer.localScopeId(doc.uri.fsPath, f.name);
       const localVars = indexer.getVariablesByPredicate(
-        (v) => v.scopeType === "local" && v.scopeId === scopeId && !v.isParam,
+        (v) => v.scopeType === "local" && v.scopeId === scopeId,
       );
       if (!localVars.length) continue;
 
@@ -414,14 +414,19 @@ export function makeDiagnostics(
         counts.set(key, (counts.get(key) || 0) + 1);
       }
 
-      // Report variables with at most 1 occurrence (declaration only = unused)
+      // Report variables that are never used.
+      // Local vars declared in the body have 1 occurrence (the declaration) when unused.
+      // Parameters are declared in the header (outside the body), so 0 occurrences = unused.
       for (const [key, vars] of varNames) {
         const count = counts.get(key) || 0;
-        if (count <= 1) {
-          for (const v of vars) {
+        for (const v of vars) {
+          const threshold = v.isParam ? 0 : 1;
+          if (count <= threshold) {
             collector.hint(
               v.location.range,
-              `Variable '${v.name}' is declared but never used.`,
+              v.isParam
+                ? `Parameter '${v.name}' is never used.`
+                : `Variable '${v.name}' is declared but never used.`,
             );
           }
         }
