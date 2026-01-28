@@ -175,6 +175,11 @@
           },
           "default": [],
           "description": "Function names to exclude from undefined and argument count checks (case-insensitive)."
+        },
+        "cicode.codeLens.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show reference counts above function definitions."
         }
       }
     },

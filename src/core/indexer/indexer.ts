@@ -22,7 +22,8 @@ export class Indexer {
   readonly variableCache = new Map<string, VariableEntry[]>();
   private readonly functionRangesByFile = new Map<string, FunctionRange[]>();
 
-  private readonly _onIndexed = new vscode.EventEmitter<void>();
+  private readonly _onIndexed = new vscode.EventEmitter<string | undefined>();
+  /** Fires after indexing completes. Carries the file path for single-file reindex, undefined for full rebuild. */
   readonly onIndexed = this._onIndexed.event;
 
   private readonly _debouncedIndex: (doc: vscode.TextDocument) => void;
@@ -81,7 +82,7 @@ export class Indexer {
         console.error("index fail", file.fsPath, e);
       }
     }
-    this._onIndexed.fire();
+    this._onIndexed.fire(undefined);
   }
 
   private _maybeIndex(doc: vscode.TextDocument): void {
@@ -99,7 +100,7 @@ export class Indexer {
       else this.variableCache.delete(k);
     }
     this.functionRangesByFile.delete(file);
-    if (fireEvent) this._onIndexed.fire();
+    if (fireEvent) this._onIndexed.fire(file);
   }
 
   private _moveFile(oldPath: string, newPath: string): void {
@@ -121,7 +122,7 @@ export class Indexer {
       );
       this.functionRangesByFile.delete(oldPath);
     }
-    this._onIndexed.fire();
+    this._onIndexed.fire(newPath);
   }
 
   /** Generate unique scope ID for local variables */
@@ -172,7 +173,7 @@ export class Indexer {
     }
 
     this._indexVariablesInText(doc, text, functions);
-    this._onIndexed.fire();
+    this._onIndexed.fire(file);
   }
 
   private _addVar(name: string, entry: VariableEntry) {

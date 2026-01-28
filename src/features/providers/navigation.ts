@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
+import type { ReferenceCache } from "../../core/referenceCache";
 import {
   buildIgnoreSpans,
   inSpan,
@@ -9,7 +10,10 @@ import { countArgsTopLevel } from "../../shared/parseHelpers";
 import { KEYWORDS_WITH_PAREN } from "../../shared/constants";
 import { escapeRegExp, formatScopeType } from "../../shared/utils";
 
-export function makeNavProviders(indexer: Indexer): vscode.Disposable[] {
+export function makeNavProviders(
+  indexer: Indexer,
+  refCache: ReferenceCache,
+): vscode.Disposable[] {
   const lang = { language: "cicode" } as const;
 
   return [
@@ -71,19 +75,67 @@ export function makeNavProviders(indexer: Indexer): vscode.Disposable[] {
         const wr = document.getWordRangeAtPosition(position, /\w+/);
         if (!wr) return [];
         const word = document.getText(wr);
-        const files = await vscode.workspace.findFiles("**/*.ci");
-        const results: vscode.Location[] = [];
 
-        async function scan(uri: vscode.Uri, range?: vscode.Range) {
+        const funcEntry = indexer.getFunction(word);
+        const varEntry = indexer.resolveVariableAt(document, position, word);
+
+        // For functions: use the cache when available
+        if (funcEntry) {
+          const cached = refCache.getReferences(word);
+          if (cached && refCache.isReady) {
+            return refCache.toLocations(cached.refs);
+          }
+          // Fallback: live scan
+          return liveScanAllFiles(word);
+        }
+
+        // For variables: scope-limited live scan (already fast)
+        if (varEntry) {
+          if (varEntry.scopeType === "local") {
+            if (varEntry.isParam) {
+              const funcRanges = indexer.getFunctionRanges(document.uri.fsPath);
+              const enclosingFunc = funcRanges.find(
+                (f) => indexer.localScopeId(document.uri.fsPath, f.name) === varEntry.scopeId
+              );
+              if (enclosingFunc) {
+                const fullRange = new vscode.Range(
+                  enclosingFunc.headerPos,
+                  enclosingFunc.bodyRange.end
+                );
+                return liveScan(document.uri, word, fullRange);
+              }
+              return liveScan(document.uri, word, varEntry.range!);
+            }
+            return liveScan(document.uri, word, varEntry.range!);
+          }
+          if (varEntry.scopeType === "module") {
+            return liveScan(document.uri, word);
+          }
+          // global variable – scan all files
+          return liveScanAllFiles(word);
+        }
+
+        // Unknown symbol – scan all files
+        return liveScanAllFiles(word);
+
+        // ---------------------------------------------------------------
+        // Helpers
+        // ---------------------------------------------------------------
+
+        async function liveScan(
+          uri: vscode.Uri,
+          target: string,
+          range?: vscode.Range,
+        ): Promise<vscode.Location[]> {
+          const results: vscode.Location[] = [];
           const doc = await vscode.workspace.openTextDocument(uri);
           const text = doc.getText();
           const searchText = range
             ? text.slice(doc.offsetAt(range.start), doc.offsetAt(range.end))
             : text;
           const baseOffset = range ? doc.offsetAt(range.start) : 0;
-          // Don't include function headers in ignore spans - we want to find references in signatures
           const ignore = buildIgnoreSpans(searchText, { includeFunctionHeaders: false });
-          const escaped = escapeRegExp(word);
+          const escaped = escapeRegExp(target);
           const re = new RegExp(`\\b${escaped}\\b`, "g");
 
           let m: RegExpExecArray | null;
@@ -91,7 +143,6 @@ export function makeNavProviders(indexer: Indexer): vscode.Disposable[] {
             const abs = baseOffset + m.index;
             if (inSpan(m.index, ignore)) continue;
 
-            // skip inline // comments
             const lineStart = text.lastIndexOf("\n", abs) + 1;
             const lineEnd = text.indexOf("\n", abs);
             const lineText = text.substring(
@@ -103,53 +154,24 @@ export function makeNavProviders(indexer: Indexer): vscode.Disposable[] {
             if (commentIdx >= 0 && col >= commentIdx) continue;
 
             const start = doc.positionAt(abs);
-            const end = doc.positionAt(abs + word.length);
+            const end = doc.positionAt(abs + target.length);
             results.push(
               new vscode.Location(uri, new vscode.Range(start, end)),
             );
           }
-        }
-
-        const funcEntry = indexer.getFunction(word);
-        const varEntry = indexer.resolveVariableAt(document, position, word);
-
-        if (funcEntry) {
-          for (const f of files) await scan(f);
           return results;
         }
-        if (varEntry) {
-          if (varEntry.scopeType === "local") {
-            // For parameters, we need to search the full function (including signature)
-            // because the parameter is defined in the header, not the body
-            if (varEntry.isParam) {
-              // Find the enclosing function and use its full range
-              const funcRanges = indexer.getFunctionRanges(document.uri.fsPath);
-              const enclosingFunc = funcRanges.find(
-                (f) => indexer.localScopeId(document.uri.fsPath, f.name) === varEntry.scopeId
-              );
-              if (enclosingFunc) {
-                // Create range from function header start to body end
-                const fullRange = new vscode.Range(
-                  enclosingFunc.headerPos,
-                  enclosingFunc.bodyRange.end
-                );
-                await scan(document.uri, fullRange);
-              } else {
-                await scan(document.uri, varEntry.range!);
-              }
-            } else {
-              await scan(document.uri, varEntry.range!);
-            }
-          } else if (varEntry.scopeType === "module") {
-            await scan(document.uri);
-          } else {
-            for (const f of files) await scan(f);
+
+        async function liveScanAllFiles(
+          target: string,
+        ): Promise<vscode.Location[]> {
+          const files = await vscode.workspace.findFiles("**/*.ci");
+          const results: vscode.Location[] = [];
+          for (const f of files) {
+            results.push(...(await liveScan(f, target)));
           }
           return results;
         }
-
-        for (const f of files) await scan(f);
-        return results;
       },
     }),
 

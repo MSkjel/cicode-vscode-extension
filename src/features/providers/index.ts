@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
+import { ReferenceCache } from "../../core/referenceCache";
 import { makeSymbols } from "./symbols";
 import { makeNavProviders } from "./navigation";
 import { makeCompletion } from "./completion";
@@ -9,6 +10,7 @@ import { makeFolding } from "./folding";
 import { makeInlay } from "./inlay";
 import { makeSemanticTokens } from "./semanticTokens";
 import { makeFormatter } from "./formatter";
+import { makeCodeLens } from "./codeLens";
 
 export function registerProviders(
   context: vscode.ExtensionContext,
@@ -18,6 +20,9 @@ export function registerProviders(
   const lang = { language: "cicode" } as const;
   const disposables: vscode.Disposable[] = [];
 
+  const refCache = new ReferenceCache(indexer, cfg);
+  disposables.push(refCache);
+
   disposables.push(
     vscode.languages.registerDocumentSymbolProvider(lang, makeSymbols(indexer)),
   );
@@ -26,7 +31,7 @@ export function registerProviders(
       makeSymbols(indexer, true),
     ),
   );
-  disposables.push(...makeNavProviders(indexer));
+  disposables.push(...makeNavProviders(indexer, refCache));
   disposables.push(
     vscode.languages.registerCompletionItemProvider(
       lang,
@@ -66,5 +71,13 @@ export function registerProviders(
       makeFormatter(cfg),
     ),
   );
+
+  disposables.push(
+    vscode.languages.registerCodeLensProvider(
+      lang,
+      makeCodeLens(indexer, refCache, cfg),
+    ),
+  );
+
   return disposables;
 }
