@@ -97,7 +97,6 @@ export class ReferenceCache implements vscode.Disposable {
         this._onCacheUpdated.fire();
       }),
     );
-
   }
 
   // =========================================================================
@@ -115,7 +114,9 @@ export class ReferenceCache implements vscode.Disposable {
   }
 
   /** Convert raw references to `vscode.Location` objects. */
-  async toLocations(refs: ReadonlyArray<RawReference>): Promise<vscode.Location[]> {
+  async toLocations(
+    refs: ReadonlyArray<RawReference>,
+  ): Promise<vscode.Location[]> {
     const byFile = new Map<string, RawReference[]>();
     for (const r of refs) {
       let arr = byFile.get(r.file);
@@ -177,12 +178,14 @@ export class ReferenceCache implements vscode.Disposable {
       for (const uri of batch) {
         await this._scanFile(uri, functionNames);
       }
+      // Update counts and notify after each batch so CodeLens shows progress
+      this._finalizeCounts();
+      this._onCacheUpdated.fire();
       // Yield to event loop between batches
       await new Promise<void>((r) => setTimeout(r, 0));
     }
 
     if (this._buildVersion !== version) return;
-    this._finalizeCounts();
     this._isReady = true;
     this._onCacheUpdated.fire();
   }
@@ -242,16 +245,31 @@ export class ReferenceCache implements vscode.Disposable {
     uri: vscode.Uri,
     functionNames: Set<string>,
   ): Promise<void> {
-    let doc: vscode.TextDocument;
-    try {
-      doc = await vscode.workspace.openTextDocument(uri);
-    } catch {
-      return;
+    const file = uri.fsPath;
+    let text: string;
+    let ignore: Array<[number, number]> | undefined;
+
+    // Try to use cached ignore spans from the indexer (much faster)
+    ignore = this.indexer.getIgnoreSpans(file);
+    if (ignore) {
+      // Indexer has processed this file — use raw fs read
+      try {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        text = new TextDecoder().decode(bytes);
+      } catch {
+        return;
+      }
+    } else {
+      // Fallback: file not yet indexed, use openTextDocument + compute spans
+      try {
+        const doc = await vscode.workspace.openTextDocument(uri);
+        text = doc.getText();
+      } catch {
+        return;
+      }
+      ignore = buildIgnoreSpans(text, { includeFunctionHeaders: false });
     }
 
-    const text = doc.getText();
-    const file = uri.fsPath;
-    const ignore = buildIgnoreSpans(text, { includeFunctionHeaders: false });
     const symbolsFoundInFile = new Set<string>();
 
     const wordRe = /\b[A-Za-z_]\w*\b/g;

@@ -16,7 +16,7 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onStartupFinished"
+    "workspaceContains:**/*.ci"
   ],
   "contributes": {
     "languages": [
@@ -238,7 +238,10 @@
     "watch": "webpack --watch",
     "vscode:prepublish": "npm run build",
     "package": "vsce package",
-    "publish": "vsce publish"
+    "publish": "vsce publish",
+    "generate-test-files": "npx ts-node scripts/generate-test-files.ts",
+    "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.ts\""
   },
   "dependencies": {
     "cheerio": "^1.1.2"

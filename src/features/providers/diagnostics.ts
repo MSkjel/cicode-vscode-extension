@@ -1,7 +1,10 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
 import { buildIgnoreSpans, inSpan, TYPE_RE } from "../../shared/textUtils";
-import { countArgsTopLevel, findMatchingParen } from "../../shared/parseHelpers";
+import {
+  countArgsTopLevel,
+  findMatchingParen,
+} from "../../shared/parseHelpers";
 import { KEYWORDS_WITH_PAREN, CONTROL_KEYWORDS } from "../../shared/constants";
 import {
   isCicodeDocument,
@@ -123,7 +126,9 @@ export function makeDiagnostics(
       if (closeAbs === -1) continue;
 
       const provided = countArgsTopLevel(text, openAbs + 1, closeAbs, ignore);
-      const { min: minArgs, max: maxArgs } = computeParamBounds(entry.params || []);
+      const { min: minArgs, max: maxArgs } = computeParamBounds(
+        entry.params || [],
+      );
 
       if (provided < minArgs || provided > maxArgs) {
         const s = doc.positionAt(m.index);
@@ -172,7 +177,10 @@ export function makeDiagnostics(
       const header = indexer.getFunction(f.name);
       const params = header?.params?.length
         ? header.params
-        : (f.paramsRaw || "").split(",").map((s) => s.trim()).filter(Boolean);
+        : (f.paramsRaw || "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
 
       if (params.length) {
         const optFlags = getOptionalParamFlags(params);
@@ -210,7 +218,9 @@ export function makeDiagnostics(
     for (const f of indexer.getFunctionRanges(doc.uri.fsPath)) {
       const cachedFunc = indexer.getFunction(f.name);
       const returnType = (
-        f.returnType || cachedFunc?.returnType || "VOID"
+        f.returnType ||
+        cachedFunc?.returnType ||
+        "VOID"
       ).toUpperCase();
 
       const bodyStartAbs = doc.offsetAt(f.bodyRange.start);
@@ -451,7 +461,11 @@ export function makeDiagnostics(
       const isComment = /^\s*(\/\/|!)/.test(trimmed);
 
       // Line length check
-      if (!isComment && lintCfg.maxLineLength > 0 && s.length > lintCfg.maxLineLength) {
+      if (
+        !isComment &&
+        lintCfg.maxLineLength > 0 &&
+        s.length > lintCfg.maxLineLength
+      ) {
         collector.hint(
           new vscode.Range(L.range.start, L.range.end),
           `Line exceeds ${lintCfg.maxLineLength} chars (${s.length}).`,
@@ -472,8 +486,11 @@ export function makeDiagnostics(
 
       // Missing semicolon on declarations
       if (lintCfg.warnMissingSemicolons && !isComment) {
-        if (/^\s*((?:GLOBAL|MODULE)\s+)?(\w+)\s+\w+(\s*,\s*\w+)*\s*$/i.test(s)) {
-          const typeWord = /^\s*(?:(?:GLOBAL|MODULE)\s+)?(\w+)/i.exec(s)?.[1] || "";
+        if (
+          /^\s*((?:GLOBAL|MODULE)\s+)?(\w+)\s+\w+(\s*,\s*\w+)*\s*$/i.test(s)
+        ) {
+          const typeWord =
+            /^\s*(?:(?:GLOBAL|MODULE)\s+)?(\w+)/i.exec(s)?.[1] || "";
           if (TYPE_RE.test(typeWord) && !/;\s*(\/\/|!|$)/.test(s)) {
             collector.info(
               new vscode.Range(L.range.start, L.range.end),
@@ -504,7 +521,9 @@ export function makeDiagnostics(
       if (lintCfg.warnMagicNumbers && !isComment) {
         // Skip declaration lines - they're giving numbers meaningful names
         const isDeclarationLine =
-          /^\s*(?:(?:GLOBAL|MODULE)\s+)?(?:INT|REAL|STRING|LONG|ULONG|BOOLEAN|OBJECT|QUALITY|TIMESTAMP)\s+\w+/i.test(s);
+          /^\s*(?:(?:GLOBAL|MODULE)\s+)?(?:INT|REAL|STRING|LONG|ULONG|BOOLEAN|OBJECT|QUALITY|TIMESTAMP)\s+\w+/i.test(
+            s,
+          );
 
         if (!isDeclarationLine) {
           const numRe = /\b(\d+(?:\.\d+)?)\b/g;
@@ -560,9 +579,11 @@ export function makeDiagnostics(
   const subs: vscode.Disposable[] = [];
   subs.push(vscode.workspace.onDidOpenTextDocument(run));
   subs.push(vscode.workspace.onDidSaveTextDocument(run));
-  subs.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
-    if (editor) run(editor.document);
-  }));
+  subs.push(
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      if (editor) run(editor.document);
+    }),
+  );
 
   // Return composite disposable with collection methods for compatibility
   return {

@@ -95,12 +95,14 @@ export function makeNavProviders(
             if (varEntry.isParam) {
               const funcRanges = indexer.getFunctionRanges(document.uri.fsPath);
               const enclosingFunc = funcRanges.find(
-                (f) => indexer.localScopeId(document.uri.fsPath, f.name) === varEntry.scopeId
+                (f) =>
+                  indexer.localScopeId(document.uri.fsPath, f.name) ===
+                  varEntry.scopeId,
               );
               if (enclosingFunc) {
                 const fullRange = new vscode.Range(
                   enclosingFunc.headerPos,
-                  enclosingFunc.bodyRange.end
+                  enclosingFunc.bodyRange.end,
                 );
                 return liveScan(document.uri, word, fullRange);
               }
@@ -134,7 +136,9 @@ export function makeNavProviders(
             ? text.slice(doc.offsetAt(range.start), doc.offsetAt(range.end))
             : text;
           const baseOffset = range ? doc.offsetAt(range.start) : 0;
-          const ignore = buildIgnoreSpans(searchText, { includeFunctionHeaders: false });
+          const ignore = buildIgnoreSpans(searchText, {
+            includeFunctionHeaders: false,
+          });
           const escaped = escapeRegExp(target);
           const re = new RegExp(`\\b${escaped}\\b`, "g");
 
@@ -226,7 +230,12 @@ export function makeNavProviders(
           const ignore = buildIgnoreSpans(argsText);
 
           // Count completed arguments (commas at top level)
-          const argCount = countArgsTopLevel(argsText, 0, argsText.length, ignore);
+          const argCount = countArgsTopLevel(
+            argsText,
+            0,
+            argsText.length,
+            ignore,
+          );
 
           // activeParameter is the current argument index (0-based)
           // If we have N completed args, we're on argument N (0-indexed)

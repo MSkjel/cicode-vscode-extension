@@ -122,7 +122,12 @@ export function makeCompletion(
       const file = document.uri.fsPath;
       const current = indexer.findEnclosingFunction(document, position);
       const seen = new Set<string>();
-      const pushVar = (v: { name: string; type: string; scopeType: string; scopeId: string }) => {
+      const pushVar = (v: {
+        name: string;
+        type: string;
+        scopeType: string;
+        scopeId: string;
+      }) => {
         const k = `${v.name}|${v.scopeType}|${v.scopeId}`;
         if (seen.has(k)) return;
         seen.add(k);
@@ -139,20 +144,17 @@ export function makeCompletion(
         items.push(it);
       };
 
-      if (current) {
-        for (const v of indexer.getVariablesByPredicate(
-          (x) =>
-            x.scopeType === "local" &&
-            x.scopeId === indexer.localScopeId(file, current.name),
-        ))
-          pushVar(v);
-      }
+      // Single pass through variables with compound predicate
+      const localScopeId = current
+        ? indexer.localScopeId(file, current.name)
+        : null;
       for (const v of indexer.getVariablesByPredicate(
-        (x) => x.scopeType === "module" && x.scopeId === file,
-      ))
-        pushVar(v);
-      for (const v of indexer.getVariablesByPredicate(
-        (x) => x.scopeType === "global",
+        (x) =>
+          (x.scopeType === "local" &&
+            localScopeId &&
+            x.scopeId === localScopeId) ||
+          (x.scopeType === "module" && x.scopeId === file) ||
+          x.scopeType === "global",
       ))
         pushVar(v);
 

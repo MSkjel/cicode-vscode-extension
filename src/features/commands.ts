@@ -1,10 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import type { Indexer } from "../core/indexer/indexer";
-import {
-  rebuildBuiltins,
-  resolveContentPath,
-} from "../core/builtins/builtins";
+import { rebuildBuiltins, resolveContentPath } from "../core/builtins/builtins";
 import { insertDocSkeletonAtCursor } from "./docSkeleton";
 
 export function registerCommands(
@@ -114,7 +111,7 @@ export function registerCommands(
   );
 
   cmds.push(
-    vscode.commands.registerCommand("cicode.createNewFile", async() => {
+    vscode.commands.registerCommand("cicode.createNewFile", async () => {
       const folder = vscode.workspace.workspaceFolders?.[0];
       if (!folder) {
         return;
@@ -122,7 +119,7 @@ export function registerCommands(
 
       while (true) {
         const fileName = await vscode.window.showInputBox({
-          prompt: "Enter new Cicode filename"
+          prompt: "Enter new Cicode filename",
         });
 
         // Return if ESC pressed
@@ -140,7 +137,7 @@ export function registerCommands(
         try {
           await vscode.workspace.fs.stat(fileUri);
           vscode.window.showErrorMessage(
-            `File "${fileName}" already exists. Please input another name.`
+            `File "${fileName}" already exists. Please input another name.`,
           );
         } catch {
           await vscode.workspace.fs.writeFile(fileUri, new Uint8Array());
@@ -148,8 +145,8 @@ export function registerCommands(
           return;
         }
       }
-    }
-  ));
+    }),
+  );
   context.subscriptions.push(...cmds);
   return cmds;
 }

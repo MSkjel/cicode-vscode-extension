@@ -198,13 +198,21 @@ export function makeFormatter(
         const isEndSelect = /^\s*end\s+select\b/i.test(trimmed);
 
         // Handle CASE: close previous CASE block if one is open
-        if (isCaseLine && selectStack.length > 0 && selectStack[selectStack.length - 1]) {
+        if (
+          isCaseLine &&
+          selectStack.length > 0 &&
+          selectStack[selectStack.length - 1]
+        ) {
           depth = Math.max(0, depth - 1);
           selectStack[selectStack.length - 1] = false;
         }
 
         // Handle END SELECT: close any open CASE first
-        if (isEndSelect && selectStack.length > 0 && selectStack[selectStack.length - 1]) {
+        if (
+          isEndSelect &&
+          selectStack.length > 0 &&
+          selectStack[selectStack.length - 1]
+        ) {
           depth = Math.max(0, depth - 1);
         }
 
