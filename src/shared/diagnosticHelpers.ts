@@ -46,7 +46,12 @@ export function createDiagnosticAt(
 ): vscode.Diagnostic {
   const start = doc.positionAt(offset);
   const end = doc.positionAt(offset + length);
-  return createDiagnostic(new vscode.Range(start, end), message, level, options);
+  return createDiagnostic(
+    new vscode.Range(start, end),
+    message,
+    level,
+    options,
+  );
 }
 
 /** Create a diagnostic for a specific line */
@@ -61,7 +66,12 @@ export function createLineDiagnostic(
 ): vscode.Diagnostic {
   const start = new vscode.Position(line, startCol);
   const end = new vscode.Position(line, startCol + length);
-  return createDiagnostic(new vscode.Range(start, end), message, level, options);
+  return createDiagnostic(
+    new vscode.Range(start, end),
+    message,
+    level,
+    options,
+  );
 }
 
 // ============================================================================

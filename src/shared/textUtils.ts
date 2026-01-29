@@ -391,7 +391,10 @@ export function extractSlashDoubleStarDoc(
   const collected: number[] = [];
   while (
     i >= 0 &&
-    (!containsOpeningDocComment(lines[i]) || isBlank(lines[i]))/* hmmm, this may break if `/**` is on the same line as the opening tag  */
+    (!containsOpeningDocComment(lines[i]) ||
+      isBlank(
+        lines[i],
+      )) /* hmmm, this may break if `/**` is on the same line as the opening tag  */
   ) {
     collected.push(i);
     i--;
@@ -404,19 +407,19 @@ export function extractSlashDoubleStarDoc(
   for (const k of collected) {
     const L = lines[k];
     if (!isBlank(L)) {
-      if (pendingBlank && out.length && out[out.length - 1] !== "")/* this might be worthwile to move into switch statement below, not sure */
+      if (pendingBlank && out.length && out[out.length - 1] !== "")
+        /* this might be worthwile to move into switch statement below, not sure */
         out.push("");
       pendingBlank = false;
-      switch(true)
-      {
+      switch (true) {
         case containsClosingDocComment(L):
-          if(isBlank(L.replace(/\*\*\/\s*/, ""))) {
+          if (isBlank(L.replace(/\*\*\/\s*/, ""))) {
             pendingBlank = true;
           }
           out.push(L.replace(/\s*\*\*\/\s*/, "").trim());
           break;
         case containsOpeningDocComment(L):
-          if(isBlank(L.replace(/\s*\/\*\*/, ""))){
+          if (isBlank(L.replace(/\s*\/\*\*/, ""))) {
             pendingBlank = true;
           }
           out.push(L.replace(/\s*\/\*\*\s*/, "").trim());

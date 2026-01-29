@@ -25,6 +25,9 @@ Thumbs.db
 .cache/
 *.tsbuildinfo
 
+# Generated test fixtures
+test-fixtures/
+
 # VS Code project settings
 .vscode/*
 !.vscode/launch.json

@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../core/indexer/indexer";
 
-export function makeStatusBar(indexer: Indexer): vscode.StatusBarItem {
+export function makeStatusBar(indexer: Indexer): vscode.Disposable {
   const item = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Right,
     100,
@@ -17,7 +17,13 @@ export function makeStatusBar(indexer: Indexer): vscode.StatusBarItem {
     item.tooltip = "Click to reindex workspace";
   };
 
-  indexer.onIndexed(refresh);
+  const subscription = indexer.onIndexed(refresh);
   refresh();
-  return item;
+
+  return {
+    dispose(): void {
+      subscription.dispose();
+      item.dispose();
+    },
+  };
 }

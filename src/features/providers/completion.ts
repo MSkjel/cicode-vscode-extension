@@ -63,27 +63,41 @@ function matchCasing(src: string, sample: string) {
 export function makeCompletion(
   indexer: Indexer,
 ): vscode.CompletionItemProvider {
+  // Cache function completion items — rebuilt only when the indexer changes
+  let cachedFuncItems: vscode.CompletionItem[] | null = null;
+
+  indexer.onIndexed(() => {
+    cachedFuncItems = null;
+  });
+
+  function getFunctionItems(): vscode.CompletionItem[] {
+    if (cachedFuncItems) return cachedFuncItems;
+    const items: vscode.CompletionItem[] = [];
+    for (const [key, f] of indexer.getAllFunctions()) {
+      const display = f.name || key;
+      const signature = `${f.returnType || "VOID"} ${display}(${(f.params || []).join(", ")})`;
+      const it = new vscode.CompletionItem(
+        display,
+        vscode.CompletionItemKind.Function,
+      );
+      it.insertText = display;
+      it.detail = signature;
+      it.sortText = `0_${display}`;
+      if (f.doc || f.returns) {
+        const md = new vscode.MarkdownString();
+        if (f.doc) md.appendMarkdown(f.doc);
+        if (f.returns) md.appendMarkdown(`\n\n**Returns:** ${f.returns}`);
+        it.documentation = md;
+      }
+      items.push(it);
+    }
+    cachedFuncItems = items;
+    return items;
+  }
+
   return {
     provideCompletionItems(document, position) {
-      const items: vscode.CompletionItem[] = [];
-      for (const [key, f] of indexer.getAllFunctions()) {
-        const display = f.name || key;
-        const signature = `${f.returnType || "VOID"} ${display}(${(f.params || []).join(", ")})`;
-        const it = new vscode.CompletionItem(
-          display,
-          vscode.CompletionItemKind.Function,
-        );
-        it.insertText = display;
-        it.detail = signature;
-        it.sortText = `0_${display}`;
-        if (f.doc || f.returns) {
-          const md = new vscode.MarkdownString();
-          if (f.doc) md.appendMarkdown(f.doc);
-          if (f.returns) md.appendMarkdown(`\n\n**Returns:** ${f.returns}`);
-          it.documentation = md;
-        }
-        items.push(it);
-      }
+      const items: vscode.CompletionItem[] = [...getFunctionItems()];
 
       const wr = leftWordRangeAt(document, position);
       const typed = wr ? document.getText(wr) : "";
@@ -108,7 +122,12 @@ export function makeCompletion(
       const file = document.uri.fsPath;
       const current = indexer.findEnclosingFunction(document, position);
       const seen = new Set<string>();
-      const pushVar = (v: { name: string; type: string; scopeType: string; scopeId: string }) => {
+      const pushVar = (v: {
+        name: string;
+        type: string;
+        scopeType: string;
+        scopeId: string;
+      }) => {
         const k = `${v.name}|${v.scopeType}|${v.scopeId}`;
         if (seen.has(k)) return;
         seen.add(k);
@@ -125,20 +144,17 @@ export function makeCompletion(
         items.push(it);
       };
 
-      if (current) {
-        for (const v of indexer.getVariablesByPredicate(
-          (x) =>
-            x.scopeType === "local" &&
-            x.scopeId === indexer.localScopeId(file, current.name),
-        ))
-          pushVar(v);
-      }
+      // Single pass through variables with compound predicate
+      const localScopeId = current
+        ? indexer.localScopeId(file, current.name)
+        : null;
       for (const v of indexer.getVariablesByPredicate(
-        (x) => x.scopeType === "module" && x.scopeId === file,
-      ))
-        pushVar(v);
-      for (const v of indexer.getVariablesByPredicate(
-        (x) => x.scopeType === "global",
+        (x) =>
+          (x.scopeType === "local" &&
+            localScopeId &&
+            x.scopeId === localScopeId) ||
+          (x.scopeType === "module" && x.scopeId === file) ||
+          x.scopeType === "global",
       ))
         pushVar(v);
 

@@ -6,7 +6,7 @@ export function makeSideBar() {
   const disposables: vscode.Disposable[] = [];
   const provider = new CicodeExplorerProvider();
   disposables.push(
-    vscode.window.registerTreeDataProvider("cicodeExplorer", provider)
+    vscode.window.registerTreeDataProvider("cicodeExplorer", provider),
   );
 
   const watcher = vscode.workspace.createFileSystemWatcher("**/*.ci");
@@ -19,7 +19,12 @@ export function makeSideBar() {
 }
 
 class CicodeExplorerItem extends vscode.TreeItem {
-  constructor(readonly label: string, readonly collapsibleState: vscode.TreeItemCollapsibleState, readonly resourceUri?: vscode.Uri, readonly isFile: boolean = false) {
+  constructor(
+    readonly label: string,
+    readonly collapsibleState: vscode.TreeItemCollapsibleState,
+    readonly resourceUri?: vscode.Uri,
+    readonly isFile: boolean = false,
+  ) {
     super(label, collapsibleState);
     this.contextValue = isFile ? "file" : "folder";
     if (resourceUri && isFile) {
@@ -33,8 +38,12 @@ class CicodeExplorerItem extends vscode.TreeItem {
   }
 }
 
-class CicodeExplorerProvider implements vscode.TreeDataProvider<CicodeExplorerItem> {
-  private _onDidChangeTreeData = new vscode.EventEmitter<CicodeExplorerItem | undefined | void>();
+class CicodeExplorerProvider
+  implements vscode.TreeDataProvider<CicodeExplorerItem>
+{
+  private _onDidChangeTreeData = new vscode.EventEmitter<
+    CicodeExplorerItem | undefined | void
+  >();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   refresh() {
@@ -63,8 +72,9 @@ class CicodeExplorerProvider implements vscode.TreeDataProvider<CicodeExplorerIt
   }
 
   private readDirectory(dirPath: string): CicodeExplorerItem[] {
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-    const sorted = entries
+    try {
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+      const sorted = entries
         .filter((e) => e.isDirectory() || e.name.endsWith(".ci"))
         .sort((a, b) => {
           if (a.isDirectory() && !b.isDirectory()) return -1;
@@ -72,16 +82,20 @@ class CicodeExplorerProvider implements vscode.TreeDataProvider<CicodeExplorerIt
           return a.name.localeCompare(b.name);
         });
 
-    return sorted.map((e) => {
-      const fullPath = path.join(dirPath, e.name);
-      return new CicodeExplorerItem(
-        e.name,
-        e.isDirectory()
-          ? vscode.TreeItemCollapsibleState.Expanded
-          : vscode.TreeItemCollapsibleState.None,
-        vscode.Uri.file(fullPath),
-        !e.isDirectory()
-      );
-    });
+      return sorted.map((e) => {
+        const fullPath = path.join(dirPath, e.name);
+        return new CicodeExplorerItem(
+          e.name,
+          e.isDirectory()
+            ? vscode.TreeItemCollapsibleState.Expanded
+            : vscode.TreeItemCollapsibleState.None,
+          vscode.Uri.file(fullPath),
+          !e.isDirectory(),
+        );
+      });
+    } catch (err) {
+      console.error(`Cicode: Failed to read directory ${dirPath}:`, err);
+      return [];
+    }
   }
 }

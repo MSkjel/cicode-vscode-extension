@@ -48,10 +48,7 @@ export const BLOCK_START_KEYWORDS = new Set([
 ]);
 
 /** Keywords that indicate statement boundaries */
-export const STATEMENT_BOUNDARY_KEYWORDS = new Set([
-  "END",
-  "FUNCTION",
-]);
+export const STATEMENT_BOUNDARY_KEYWORDS = new Set(["END", "FUNCTION"]);
 
 /** Valid Cicode type names */
 export const CICODE_TYPES = new Set([

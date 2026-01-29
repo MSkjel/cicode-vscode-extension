@@ -7,7 +7,9 @@ A VS Code extension providing syntax highlighting, IntelliSense, and navigation 
 ## Features
 
 ### Syntax Highlighting
+
 Full syntax highlighting for `.ci` files including:
+
 - Keywords, operators, and control flow
 - Function declarations and calls
 - Variables and type annotations
@@ -17,11 +19,13 @@ Full syntax highlighting for `.ci` files including:
 - Format picture specifiers (`:###,##0.00`)
 
 ### IntelliSense
+
 - **Autocompletion** for functions (built-in and user-defined)
 - **Signature help** with parameter documentation
 - **Hover information** showing function signatures and docs
 
 ### Navigation
+
 - **Go to Definition** for functions and variables
 - **Find All References** across your workspace
 - **Rename Symbol** for variables and parameters
@@ -29,6 +33,7 @@ Full syntax highlighting for `.ci` files including:
 - **Workspace Symbol Search** (`Ctrl+T`) to find any function
 
 ### Diagnostics
+
 - Undefined function warnings
 - Argument count validation
 - Duplicate function detection
@@ -36,10 +41,12 @@ Full syntax highlighting for `.ci` files including:
 - Line length and indentation checks
 
 ### Formatting
+
 - Basic code formatter with configurable options
 - Consistent indentation for control blocks
 
 ### Built-in Functions
+
 - Automatically parses function documentation from your Plant SCADA installation
 - Falls back to packaged builtins if Plant SCADA is not installed
 - Hover over built-in functions to see docs with a link to open the full help page
@@ -51,36 +58,36 @@ Full syntax highlighting for `.ci` files including:
 
 ## Configuration
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `cicode.avevaPath` | `C:/Program Files (x86)/AVEVA Plant SCADA` | Path to AVEVA Plant SCADA installation. The extension auto-finds help files. |
-| `cicode.diagnostics.enable` | `true` | Enable diagnostics (undefined functions, duplicates) |
-| `cicode.diagnostics.ignoredFunctions` | `[]` | Function names to exclude from checks |
-| `cicode.format.enable` | `true` | Enable the code formatter |
-| `cicode.format.maxConsecutiveBlankLines` | `1` | Max blank lines to allow |
-| `cicode.hover.showHelpLink` | `true` | Show "Open full help" link in hovers |
-| `cicode.indexing.excludeGlobs` | `["**/node_modules/**"]` | Patterns to exclude from indexing |
-| `cicode.lint.enable` | `true` | Enable lint diagnostics |
-| `cicode.lint.maxLineLength` | `140` | Warn when lines exceed this length |
-| `cicode.lint.warnMixedIndent` | `true` | Warn on mixed tabs/spaces |
-| `cicode.lint.warnUnusedVariables` | `true` | Warn about unused variables |
-| `cicode.lint.warnMissingSemicolons` | `true` | Warn when declarations lack semicolons |
-| `cicode.lint.warnKeywordCase` | `false` | Suggest uppercase keywords |
-| `cicode.lint.warnMagicNumbers` | `false` | Warn about hardcoded numbers |
+| Setting                                  | Default                                    | Description                                                                  |
+| ---------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------- |
+| `cicode.avevaPath`                       | `C:/Program Files (x86)/AVEVA Plant SCADA` | Path to AVEVA Plant SCADA installation. The extension auto-finds help files. |
+| `cicode.diagnostics.enable`              | `true`                                     | Enable diagnostics (undefined functions, duplicates)                         |
+| `cicode.diagnostics.ignoredFunctions`    | `[]`                                       | Function names to exclude from checks                                        |
+| `cicode.format.enable`                   | `true`                                     | Enable the code formatter                                                    |
+| `cicode.format.maxConsecutiveBlankLines` | `1`                                        | Max blank lines to allow                                                     |
+| `cicode.hover.showHelpLink`              | `true`                                     | Show "Open full help" link in hovers                                         |
+| `cicode.indexing.excludeGlobs`           | `["**/node_modules/**"]`                   | Patterns to exclude from indexing                                            |
+| `cicode.lint.enable`                     | `true`                                     | Enable lint diagnostics                                                      |
+| `cicode.lint.maxLineLength`              | `140`                                      | Warn when lines exceed this length                                           |
+| `cicode.lint.warnMixedIndent`            | `true`                                     | Warn on mixed tabs/spaces                                                    |
+| `cicode.lint.warnUnusedVariables`        | `true`                                     | Warn about unused variables                                                  |
+| `cicode.lint.warnMissingSemicolons`      | `true`                                     | Warn when declarations lack semicolons                                       |
+| `cicode.lint.warnKeywordCase`            | `false`                                    | Suggest uppercase keywords                                                   |
+| `cicode.lint.warnMagicNumbers`           | `false`                                    | Warn about hardcoded numbers                                                 |
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `Cicode: Rebuild Builtin Functions` | Re-parse built-in functions from help files |
-| `Cicode: Reindex All Files` | Rebuild the workspace index |
-| `Cicode: Open Help for Symbol` | Open AVEVA help page for the symbol under cursor |
-| `Cicode: Insert Doc Skeleton` | Insert a doc comment template above the current function |
+| Command                             | Description                                              |
+| ----------------------------------- | -------------------------------------------------------- |
+| `Cicode: Rebuild Builtin Functions` | Re-parse built-in functions from help files              |
+| `Cicode: Reindex All Files`         | Rebuild the workspace index                              |
+| `Cicode: Open Help for Symbol`      | Open AVEVA help page for the symbol under cursor         |
+| `Cicode: Insert Doc Skeleton`       | Insert a doc comment template above the current function |
 
 ## Keybindings
 
-| Key | Command |
-|-----|---------|
+| Key          | Command                                     |
+| ------------ | ------------------------------------------- |
 | `Ctrl+Alt+D` | Insert Doc Skeleton (when in a Cicode file) |
 
 ## Doc Comments

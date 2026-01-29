@@ -21,8 +21,17 @@ export class Indexer {
   private readonly functionCache = new Map<string, FunctionInfo>();
   readonly variableCache = new Map<string, VariableEntry[]>();
   private readonly functionRangesByFile = new Map<string, FunctionRange[]>();
+  private readonly _ignoreSpansByFile = new Map<
+    string,
+    Array<[number, number]>
+  >();
 
-  private readonly _onIndexed = new vscode.EventEmitter<void>();
+  // Reverse indexes for O(1) file purge instead of O(n) iteration
+  private readonly _functionKeysByFile = new Map<string, Set<string>>();
+  private readonly _variableKeysByFile = new Map<string, Set<string>>();
+
+  private readonly _onIndexed = new vscode.EventEmitter<string | undefined>();
+  /** Fires after indexing completes. Carries the file path for single-file reindex, undefined for full rebuild. */
   readonly onIndexed = this._onIndexed.event;
 
   private readonly _debouncedIndex: (doc: vscode.TextDocument) => void;
@@ -81,7 +90,7 @@ export class Indexer {
         console.error("index fail", file.fsPath, e);
       }
     }
-    this._onIndexed.fire();
+    this._onIndexed.fire(undefined);
   }
 
   private _maybeIndex(doc: vscode.TextDocument): void {
@@ -90,30 +99,49 @@ export class Indexer {
   }
 
   private _purgeFile(file: string, fireEvent = true): void {
-    for (const [k, v] of this.functionCache) {
-      if (v && v.file === file) this.functionCache.delete(k);
+    // Use reverse index for O(functions_in_file) instead of O(all_functions)
+    const funcKeys = this._functionKeysByFile.get(file);
+    if (funcKeys) {
+      for (const key of funcKeys) {
+        this.functionCache.delete(key);
+      }
+      this._functionKeysByFile.delete(file);
     }
-    for (const [k, arr] of this.variableCache) {
-      const filtered = arr.filter((e) => e.file !== file);
-      if (filtered.length) this.variableCache.set(k, filtered);
-      else this.variableCache.delete(k);
+
+    // Use reverse index for O(variables_in_file) instead of O(all_variables)
+    const varKeys = this._variableKeysByFile.get(file);
+    if (varKeys) {
+      for (const key of varKeys) {
+        const arr = this.variableCache.get(key);
+        if (arr) {
+          const filtered = arr.filter((e) => e.file !== file);
+          if (filtered.length) this.variableCache.set(key, filtered);
+          else this.variableCache.delete(key);
+        }
+      }
+      this._variableKeysByFile.delete(file);
     }
+
     this.functionRangesByFile.delete(file);
-    if (fireEvent) this._onIndexed.fire();
+    this._ignoreSpansByFile.delete(file);
+    if (fireEvent) this._onIndexed.fire(file);
   }
 
   private _moveFile(oldPath: string, newPath: string): void {
+    // Update function cache entries
     for (const [key, v] of this.functionCache) {
       if (v && v.file === oldPath) {
         this.functionCache.set(key, { ...v, file: newPath });
       }
     }
+    // Update variable cache entries
     for (const [key, arr] of this.variableCache) {
       const updated = arr.map((e) =>
-        e.file === oldPath ? { ...e, file: newPath } : e
+        e.file === oldPath ? { ...e, file: newPath } : e,
       );
       this.variableCache.set(key, updated);
     }
+    // Update function ranges by file
     if (this.functionRangesByFile.has(oldPath)) {
       this.functionRangesByFile.set(
         newPath,
@@ -121,7 +149,30 @@ export class Indexer {
       );
       this.functionRangesByFile.delete(oldPath);
     }
-    this._onIndexed.fire();
+    // Update ignore spans by file
+    if (this._ignoreSpansByFile.has(oldPath)) {
+      this._ignoreSpansByFile.set(
+        newPath,
+        this._ignoreSpansByFile.get(oldPath)!,
+      );
+      this._ignoreSpansByFile.delete(oldPath);
+    }
+    // Update reverse indexes
+    if (this._functionKeysByFile.has(oldPath)) {
+      this._functionKeysByFile.set(
+        newPath,
+        this._functionKeysByFile.get(oldPath)!,
+      );
+      this._functionKeysByFile.delete(oldPath);
+    }
+    if (this._variableKeysByFile.has(oldPath)) {
+      this._variableKeysByFile.set(
+        newPath,
+        this._variableKeysByFile.get(oldPath)!,
+      );
+      this._variableKeysByFile.delete(oldPath);
+    }
+    this._onIndexed.fire(newPath);
   }
 
   /** Generate unique scope ID for local variables */
@@ -134,7 +185,12 @@ export class Indexer {
     this._purgeFile(file, false);
 
     const text = doc.getText();
-    const functions = this._extractFunctionsWithRanges(text, doc);
+    const ignoreSpans = buildIgnoreSpans(text, {
+      includeFunctionHeaders: false,
+    });
+    this._ignoreSpansByFile.set(file, ignoreSpans);
+
+    const functions = this._extractFunctionsWithRanges(text, doc, ignoreSpans);
     this.functionRangesByFile.set(file, functions);
 
     for (const f of functions as any[]) {
@@ -156,6 +212,12 @@ export class Indexer {
         bodyRange: f.bodyRange,
       });
 
+      // Track in reverse index for efficient purge
+      if (!this._functionKeysByFile.has(file)) {
+        this._functionKeysByFile.set(file, new Set());
+      }
+      this._functionKeysByFile.get(file)!.add(key);
+
       // Register function parameters as local variables
       for (const v of this._parseParamVariables(params)) {
         this._addVar(v.name, {
@@ -172,13 +234,19 @@ export class Indexer {
     }
 
     this._indexVariablesInText(doc, text, functions);
-    this._onIndexed.fire();
+    this._onIndexed.fire(file);
   }
 
   private _addVar(name: string, entry: VariableEntry) {
     const k = name.toLowerCase();
     if (!this.variableCache.has(k)) this.variableCache.set(k, []);
     this.variableCache.get(k)!.push(entry);
+
+    // Track in reverse index for efficient purge
+    if (!this._variableKeysByFile.has(entry.file)) {
+      this._variableKeysByFile.set(entry.file, new Set());
+    }
+    this._variableKeysByFile.get(entry.file)!.add(k);
   }
 
   /**
@@ -188,9 +256,8 @@ export class Indexer {
   private _extractFunctionsWithRanges(
     text: string,
     doc: vscode.TextDocument,
+    ignoreCS: Array<[number, number]>,
   ): FunctionRange[] {
-    const ignoreCS = buildIgnoreSpans(text, { includeFunctionHeaders: false });
-
     const funcKeywordRe = /\bfunction\b/gi;
     const headers: Array<{
       returnType: string;
@@ -222,7 +289,9 @@ export class Indexer {
       // Skip any inline comment on the same line as FUNCTION keyword
       // Comments in Cicode: // or ! or |
       // We need to skip: optional whitespace, then optional comment to end of line
-      const skipCommentMatch = /^[ \t]*((?:\/\/|!|\|)[^\r\n]*)?\r?\n?/i.exec(afterFunc);
+      const skipCommentMatch = /^[ \t]*((?:\/\/|!|\|)[^\r\n]*)?\r?\n?/i.exec(
+        afterFunc,
+      );
       const skipLen = skipCommentMatch ? skipCommentMatch[0].length : 0;
       const afterComment = afterFunc.slice(skipLen);
       const afterCommentPos = funcKeywordPos + skipLen;
@@ -234,7 +303,8 @@ export class Indexer {
         // Simple case: name(params) all on one line (or what remains fits)
         name = nameMatch[1];
         paramsRaw = nameMatch[2] || "";
-        nameOffset = afterCommentPos + nameMatch.index + nameMatch[0].indexOf(name);
+        nameOffset =
+          afterCommentPos + nameMatch.index + nameMatch[0].indexOf(name);
         headerEndPos = afterCommentPos + nameMatch.index + nameMatch[0].length;
       } else {
         // Handle multi-line function signatures
@@ -249,7 +319,11 @@ export class Indexer {
         let depth = 1;
         let closeParenPos = -1;
 
-        for (let i = openParenPos + 1; i < text.length && i < openParenPos + 5000; i++) {
+        for (
+          let i = openParenPos + 1;
+          i < text.length && i < openParenPos + 5000;
+          i++
+        ) {
           const ch = text[i];
           if (ch === "(") depth++;
           else if (ch === ")") {
@@ -274,15 +348,25 @@ export class Indexer {
 
       // Check for type on same line: "INT FUNCTION foo()"
       const lastLine = beforeLines[beforeLines.length - 1] || "";
-      const sameLineMatch = /\b(INT|REAL|STRING|OBJECT|BOOL|BOOLEAN|LONG|ULONG|VOID|QUALITY|TIMESTAMP)\s*$/i.exec(lastLine);
+      const sameLineMatch =
+        /\b(INT|REAL|STRING|OBJECT|BOOL|BOOLEAN|LONG|ULONG|VOID|QUALITY|TIMESTAMP)\s*$/i.exec(
+          lastLine,
+        );
 
       if (sameLineMatch) {
         returnType = sameLineMatch[1].toUpperCase();
       } else {
         // Scan upward (max 20 lines) for standalone type declaration
-        for (let i = beforeLines.length - 1; i >= 0 && i >= beforeLines.length - 20; i--) {
+        for (
+          let i = beforeLines.length - 1;
+          i >= 0 && i >= beforeLines.length - 20;
+          i--
+        ) {
           const raw = beforeLines[i];
-          const line = raw.replace(/\/\/.*$/, "").replace(/!.*$/, "").trim();
+          const line = raw
+            .replace(/\/\/.*$/, "")
+            .replace(/!.*$/, "")
+            .trim();
 
           if (!line) continue;
 
@@ -345,9 +429,8 @@ export class Indexer {
       const bodyStart = h.headerEndPos;
 
       // Don't search past the next function's header
-      const maxSearchEnd = hi + 1 < headers.length
-        ? headers[hi + 1].headerIndex
-        : text.length;
+      const maxSearchEnd =
+        hi + 1 < headers.length ? headers[hi + 1].headerIndex : text.length;
 
       // Track nesting depth to find matching END
       // Note: 'function' is excluded since Cicode doesn't support nested functions
@@ -436,7 +519,8 @@ export class Indexer {
     ) => {
       const ignore = buildIgnoreSpans(sliceText);
       // Use [ \t]+ (not \s+) between type and names to avoid matching across newlines
-      const declRe = /^\s*(?:(GLOBAL|MODULE)[ \t]+)?(\w+)[ \t]+([^\r\n;]+)\s*;?/gim;
+      const declRe =
+        /^\s*(?:(GLOBAL|MODULE)[ \t]+)?(\w+)[ \t]+([^\r\n;]+)\s*;?/gim;
       let m: RegExpExecArray | null;
 
       while ((m = declRe.exec(sliceText))) {
@@ -575,7 +659,9 @@ export class Indexer {
     return out;
   }
 
-  getVariablesByPredicate(pred: (v: VariableEntry) => boolean): VariableEntry[] {
+  getVariablesByPredicate(
+    pred: (v: VariableEntry) => boolean,
+  ): VariableEntry[] {
     const out: VariableEntry[] = [];
     for (const [, arr] of this.variableCache) {
       for (const v of arr) {
@@ -603,6 +689,11 @@ export class Indexer {
 
   getFunctionRanges(file: string) {
     return this.functionRangesByFile.get(file) || [];
+  }
+
+  /** Get cached ignore spans (comments/strings) for a file, if indexed. */
+  getIgnoreSpans(file: string): Array<[number, number]> | undefined {
+    return this._ignoreSpansByFile.get(file);
   }
 
   /** Resolve a variable name at a given position, respecting scope rules */
@@ -653,5 +744,10 @@ export class Indexer {
       if (off >= headerStart && off < bodyEnd) return f;
     }
     return null;
+  }
+
+  /** Dispose of resources (EventEmitter) */
+  dispose(): void {
+    this._onIndexed.dispose();
   }
 }

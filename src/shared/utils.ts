@@ -32,8 +32,7 @@ export function escapeRegExp(s: string): string {
 /** Check if a document is a Cicode file */
 export function isCicodeDocument(doc: vscode.TextDocument): boolean {
   return (
-    doc.languageId === "cicode" ||
-    doc.uri.fsPath.toLowerCase().endsWith(".ci")
+    doc.languageId === "cicode" || doc.uri.fsPath.toLowerCase().endsWith(".ci")
   );
 }
 
