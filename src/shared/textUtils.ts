@@ -546,7 +546,7 @@ function parseNonXmlDocLines(lines: string[]): {
   If nothing, and the first line does have a special command, just use the first line anyway
    */
   {
-    const m = /[@/](?:short|brief)(?:[\s\n]?\s?)(.*)/i.exec(raw);
+    const m = /[@\\](?:short|brief)(?:[\s\n]?\s?)(.*)/i.exec(raw);
     const entireFirstLine = /^(?:\n*)(.+)$/im.exec(raw);
     const backupBody = entireFirstLine ? entireFirstLine[1] : raw;
     const body = m ? m[1] : backupBody;
@@ -556,7 +556,7 @@ function parseNonXmlDocLines(lines: string[]): {
   const paramDocs: Record<string, string> = {};
   {
     const re =
-      /[@/](?:param)(?:\[(?:in|out)\])?(?:[\s\n]?\s?)(\w+)(?:\s)(.*)*/gi; // NOTE: this does not support the comma seperated list option
+      /[@\\](?:param)(?:\[(?:in|out)\])?(?:[\s\n]?\s?)(\w+)(?:\s)(.*)*/gi; // NOTE: this does not support the comma seperated list option
     let m: RegExpExecArray | null;
     while ((m = re.exec(raw))) {
       const name = (m[1] || "").trim();
@@ -567,7 +567,7 @@ function parseNonXmlDocLines(lines: string[]): {
 
   let returns: string | undefined;
   {
-    const m = /[@/](?:return(?:s)?)(?:[\s\n]?\s?)(.*)/i.exec(raw);
+    const m = /[@\\](?:return(?:s)?)(?:[\s\n]?\s?)(.*)/i.exec(raw);
     console.log(m);
     if (m) returns = normalizeDocText(m[1].trim());
   }

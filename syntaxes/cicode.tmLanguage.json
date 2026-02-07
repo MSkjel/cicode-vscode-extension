@@ -5,12 +5,29 @@
   "patterns": [
     {
       "begin": "/\\*\\*",
-      "end": "\\*\\*/",
+      "end": "\\*/",
       "name": "comment.block.xml-documentation.cicode",
       "patterns": [
         {
           "contentName": "meta.embedded.block.xml",
           "patterns": [
+            {
+              "name": "comment.block.parameter-normal-doxygen-documentation.cicode",
+              "match": "[@\\\\]param\\s(\\w+)\\s(.*)",
+              "captures": {
+                "0": { "name": "entity.other.attribute-name.xml" },
+                "1": { "name": "variable.other.cicode" },
+                "2": { "name": "comment.doc.text.cicode" }
+              }
+            },
+            {
+              "name": "comment.block.noarg-normal-doxygen-documentation.cicode",
+              "match": "([@\\\\]short|[@\\\\]brief|[@\\\\]return(?:s)?)\\s(.*)",
+              "captures": {
+                "1": { "name": "entity.other.attribute-name.xml" },
+                "2": { "name": "comment.doc.text.cicode" }
+              }
+            },
             {
               "name": "entity.name.tag.doc.xml.cicode",
               "match": "</?[a-zA-Z0-9:_-]+"
