@@ -7,7 +7,7 @@ import {
   inSpan,
   extractLeadingTripleSlashDoc,
   extractSlashDoubleStarDoc,
-  parseXmlDocLines,
+  parseDocLines,
 } from "../../shared/textUtils";
 import { getBuiltins } from "../builtins/builtins";
 import type { FunctionInfo, VariableEntry } from "../../shared/types";
@@ -401,7 +401,7 @@ export class Indexer {
         docLines = extractLeadingTripleSlashDoc(text, headerStart);
       }
       if (docLines.length) {
-        const parsed = parseXmlDocLines(docLines);
+        const parsed = parseDocLines(docLines);
         docText = parsed.summary || undefined;
         returnsDoc = parsed.returns || undefined;
         if (Object.keys(parsed.paramDocs).length) paramDocs = parsed.paramDocs;

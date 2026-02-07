@@ -498,6 +498,83 @@ export function extractLeadingTripleSlashDoc(
   return out;
 }
 
+export function parseDocLines(lines: string[]): {
+  summary: string;
+  paramDocs: Record<string, string>;
+  returns?: string;
+} {
+  let extractDocLines = parseXmlDocLines(lines);
+  /*
+  Check if XML doc lines exists first, as it much less likely for XML regex to appear unintentionally in other format.
+  Although this could introduce slowdowns for non XML docstrings, maybe it should preference the user's
+  configuration option first, and then fall back to the other option.
+   */
+  if (
+    // XML parsing collection was not empty
+    !(
+      extractDocLines.summary === "" &&
+      Object.keys(extractDocLines.paramDocs).length === 0 &&
+      extractDocLines.returns === undefined
+    )
+  ) {
+    return {
+      summary: extractDocLines.summary,
+      paramDocs: extractDocLines.paramDocs,
+      returns: extractDocLines.returns,
+    };
+  } else {
+    // we found nothing in the XML, so now we look in non xml
+    extractDocLines = parseNonXmlDocLines(lines);
+    return {
+      summary: extractDocLines.summary,
+      paramDocs: extractDocLines.paramDocs,
+      returns: extractDocLines.returns,
+    };
+  }
+}
+
+function parseNonXmlDocLines(lines: string[]): {
+  summary: string;
+  paramDocs: Record<string, string>;
+  returns?: string;
+} {
+  const raw = lines.join("\n");
+
+  let summary = "";
+  /*
+  First check for any \brief or @short
+  If nothing, and the first line does have a special command, just use the first line anyway
+   */
+  {
+    const m = /[@/](?:short|brief)(?:[\s\n]?\s?)(.*)/i.exec(raw);
+    const entireFirstLine = /^(?:\n*)(.+)$/im.exec(raw);
+    const backupBody = entireFirstLine ? entireFirstLine[1] : raw;
+    const body = m ? m[1] : backupBody;
+    summary = normalizeDocText(body);
+  }
+
+  const paramDocs: Record<string, string> = {};
+  {
+    const re =
+      /[@/](?:param)(?:\[(?:in|out)\])?(?:[\s\n]?\s?)(\w+)(?:\s)(.*)*/gi; // NOTE: this does not support the comma seperated list option
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(raw))) {
+      const name = (m[1] || "").trim();
+      const body = (m[2] || "").trim();
+      if (name) paramDocs[name] = normalizeDocText(body);
+    }
+  }
+
+  let returns: string | undefined;
+  {
+    const m = /[@/](?:return(?:s)?)(?:[\s\n]?\s?)(.*)/i.exec(raw);
+    console.log(m);
+    if (m) returns = normalizeDocText(m[1].trim());
+  }
+
+  return { summary, paramDocs, returns };
+}
+
 export function parseXmlDocLines(lines: string[]): {
   summary: string;
   paramDocs: Record<string, string>;
@@ -508,7 +585,7 @@ export function parseXmlDocLines(lines: string[]): {
   let summary = "";
   {
     const m = /<summary>([\s\S]*?)<\/summary>/i.exec(raw);
-    const body = m ? m[1] : raw;
+    const body = m ? m[1] : "";
     summary = normalizeDocText(body.replace(/<[^>]+>/g, ""));
   }
 
