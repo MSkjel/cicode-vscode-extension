@@ -377,7 +377,7 @@ export function extractSlashDoubleStarDoc(
 
   const isBlank = (s: string) => /^\s*$/.test(s);
   const containsOpeningDocComment = (s: string) => /^\s*\/\*\*/.test(s); // looks for /**
-  const containsClosingDocComment = (s: string) => /\*\*\/\s*?$/.test(s); // looks for **/
+  const containsClosingDocComment = (s: string) => /\*\/\s*?$/.test(s); // looks for */
 
   const out: string[] = [];
   let i = headerLine - 1;

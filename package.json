@@ -180,6 +180,26 @@
           "type": "boolean",
           "default": true,
           "description": "Show reference counts above function definitions."
+        },
+        "cicode.documentation.docskeleton.useBlockComment": {
+          "type": "string",
+          "default": "Block comment",
+          "description": "Style of comments used for the doc skeleton",
+          "enum": ["Block comment", "Single-line comment"],
+          "enumDescriptions": [
+            "Comment surrounded by /** ... */",
+            "Each line begins with ///"
+          ]
+        },
+        "cicode.documentation.docskeleton.doxygenStyle": {
+          "type": "string",
+          "default": "XML Doxygen commands",
+          "description": "The style of doxygen commands to be used by the doc skeleton",
+          "enum": [
+            "XML Doxygen commands",
+            "Javadoc style (@)",
+            "Normal style (\\)"
+          ]
         }
       }
     },
