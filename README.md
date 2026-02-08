@@ -75,7 +75,7 @@ Full syntax highlighting for `.ci` files including:
 | `cicode.lint.warnKeywordCase`                      | `false`                                    | Suggest uppercase keywords                                                                                                                                              |
 | `cicode.lint.warnMagicNumbers`                     | `false`                                    | Warn about hardcoded numbers                                                                                                                                            |
 | `cicode.documentation.docskeleton.useBlockComment` | `Block comment`                            | Style of comments used for the doc comment skeleton, where comments can either be surrounded by `/** ... */` or each line begins with `///`                             |
-| `cicode.documentation.docskeleton.doxygenStyle`    | `XML Doxygen commands`                     | The style of doxygen commands to be used by the doc comment skeleton, which can be either XML style commands, Javadoc commands (`@`), or regular doxygen commands (`\`) |
+| `cicode.documentation.docskeleton.doxygenStyle`    | `XML Doxygen commands`                     | The style of Doxygen commands to be used by the doc comment skeleton, which can be either XML style commands, Javadoc commands (`@`), or regular Doxygen commands (`\`) |
 
 ## Commands
 
