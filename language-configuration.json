@@ -2,6 +2,10 @@
   "comments": {
     "lineComment": "//"
   },
+  "indentationRules": {
+    "increaseIndentPattern": ".*\\b(?:[tT][hH][eE][nN]|[dD][oO])\\s*(?://.*)?$|^\\s*.*\\b[fF][uU][nN][cC][tT][iI][oO][nN]\\b|^\\s*(?:[eE][lL][sS][eE]|[rR][eE][pP][eE][aA][tT]|[tT][rR][yY]|[eE][xX][cC][eE][pP][tT]|[fF][iI][nN][aA][lL][lL][yY]|[sS][eE][lL][eE][cC][tT]\\s+[cC][aA][sS][eE]|[cC][aA][sS][eE])\\b",
+    "decreaseIndentPattern": "^\\s*(?:[eE][nN][dD](?:\\s+[sS][eE][lL][eE][cC][tT])?|[eE][lL][sS][eE]|[eE][xX][cC][eE][pP][tT]|[fF][iI][nN][aA][lL][lL][yY]|[uU][nN][tT][iI][lL])\\b"
+  },
   "brackets": [
     ["{", "}"],
     ["[", "]"],
