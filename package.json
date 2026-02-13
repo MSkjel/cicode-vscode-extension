@@ -193,7 +193,7 @@
         },
         "cicode.documentation.docskeleton.doxygenStyle": {
           "type": "string",
-          "default": "XML Doxygen commands",
+          "default": "Javadoc style (@)",
           "description": "The style of doxygen commands to be used by the doc skeleton",
           "enum": [
             "XML Doxygen commands",

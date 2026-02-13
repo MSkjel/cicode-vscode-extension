@@ -19,9 +19,9 @@ function getDocstringFormat(): DocSkeletonConfig {
         ? true
         : false,
     useXMLDoxygenCommands:
-      c.get(
+      c.get<string>(
         "cicode.documentation.docskeleton.doxygenStyle",
-        "XML Doxygen commands",
+        "Javadoc style (@)",
       ) === "XML Doxygen commands"
         ? true
         : false,
