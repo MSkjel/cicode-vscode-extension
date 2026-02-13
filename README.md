@@ -58,22 +58,24 @@ Full syntax highlighting for `.ci` files including:
 
 ## Configuration
 
-| Setting                                  | Default                                    | Description                                                                  |
-| ---------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------- |
-| `cicode.avevaPath`                       | `C:/Program Files (x86)/AVEVA Plant SCADA` | Path to AVEVA Plant SCADA installation. The extension auto-finds help files. |
-| `cicode.diagnostics.enable`              | `true`                                     | Enable diagnostics (undefined functions, duplicates)                         |
-| `cicode.diagnostics.ignoredFunctions`    | `[]`                                       | Function names to exclude from checks                                        |
-| `cicode.format.enable`                   | `true`                                     | Enable the code formatter                                                    |
-| `cicode.format.maxConsecutiveBlankLines` | `1`                                        | Max blank lines to allow                                                     |
-| `cicode.hover.showHelpLink`              | `true`                                     | Show "Open full help" link in hovers                                         |
-| `cicode.indexing.excludeGlobs`           | `["**/node_modules/**"]`                   | Patterns to exclude from indexing                                            |
-| `cicode.lint.enable`                     | `true`                                     | Enable lint diagnostics                                                      |
-| `cicode.lint.maxLineLength`              | `140`                                      | Warn when lines exceed this length                                           |
-| `cicode.lint.warnMixedIndent`            | `true`                                     | Warn on mixed tabs/spaces                                                    |
-| `cicode.lint.warnUnusedVariables`        | `true`                                     | Warn about unused variables                                                  |
-| `cicode.lint.warnMissingSemicolons`      | `true`                                     | Warn when declarations lack semicolons                                       |
-| `cicode.lint.warnKeywordCase`            | `false`                                    | Suggest uppercase keywords                                                   |
-| `cicode.lint.warnMagicNumbers`           | `false`                                    | Warn about hardcoded numbers                                                 |
+| Setting                                            | Default                                    | Description                                                                                                                                                             |
+|----------------------------------------------------|--------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `cicode.avevaPath`                                 | `C:/Program Files (x86)/AVEVA Plant SCADA` | Path to AVEVA Plant SCADA installation. The extension auto-finds help files.                                                                                            |
+| `cicode.diagnostics.enable`                        | `true`                                     | Enable diagnostics (undefined functions, duplicates)                                                                                                                    |
+| `cicode.diagnostics.ignoredFunctions`              | `[]`                                       | Function names to exclude from checks                                                                                                                                   |
+| `cicode.format.enable`                             | `true`                                     | Enable the code formatter                                                                                                                                               |
+| `cicode.format.maxConsecutiveBlankLines`           | `1`                                        | Max blank lines to allow                                                                                                                                                |
+| `cicode.hover.showHelpLink`                        | `true`                                     | Show "Open full help" link in hovers                                                                                                                                    |
+| `cicode.indexing.excludeGlobs`                     | `["**/node_modules/**"]`                   | Patterns to exclude from indexing                                                                                                                                       |
+| `cicode.lint.enable`                               | `true`                                     | Enable lint diagnostics                                                                                                                                                 |
+| `cicode.lint.maxLineLength`                        | `140`                                      | Warn when lines exceed this length                                                                                                                                      |
+| `cicode.lint.warnMixedIndent`                      | `true`                                     | Warn on mixed tabs/spaces                                                                                                                                               |
+| `cicode.lint.warnUnusedVariables`                  | `true`                                     | Warn about unused variables                                                                                                                                             |
+| `cicode.lint.warnMissingSemicolons`                | `true`                                     | Warn when declarations lack semicolons                                                                                                                                  |
+| `cicode.lint.warnKeywordCase`                      | `false`                                    | Suggest uppercase keywords                                                                                                                                              |
+| `cicode.lint.warnMagicNumbers`                     | `false`                                    | Warn about hardcoded numbers                                                                                                                                            |
+| `cicode.documentation.docskeleton.useBlockComment` | `Block comment`                            | Style of comments used for the doc comment skeleton, where comments can either be surrounded by `/** ... */` or each line begins with `///`                             |
+| `cicode.documentation.docskeleton.doxygenStyle`    | `XML Doxygen commands`                     | The style of Doxygen commands to be used by the doc comment skeleton, which can be either XML style commands, Javadoc commands (`@`), or regular Doxygen commands (`\`) |
 
 ## Commands
 
@@ -92,22 +94,36 @@ Full syntax highlighting for `.ci` files including:
 
 ## Doc Comments
 
-The extension supports [Doxygen XML](https://www.doxygen.nl/manual/xmlcmds.html) doc comments for documenting your functions:
+The extension supports both [Doxygen XML](https://www.doxygen.nl/manual/xmlcmds.html), and [regular Doxygen commands](https://www.doxygen.nl/manual/commands.html) doc comments for documenting your functions:
 
 ```cicode
-/**
- * <summary>Calculates the area of a rectangle.</summary>
- * <param name="width">The width of the rectangle.</param>
- * <param name="height">The height of the rectangle.</param>
- * <returns>The calculated area.</returns>
- **/
+// Example of XML style doc comment
+/// <summary>
+/// Calculates the area of a rectangle.
+/// </summary>
+/// <param name="width">The width of the rectangle.</param>
+/// <param name="height">The height of the rectangle.</param>
+/// <returns>The calculated area.</returns>
 FUNCTION CalculateArea(REAL width, REAL height)
     RETURN width * height;
 END
 ```
 
+```cicode
+// Example of Javadoc style doc comment
+/**
+ * @brief Calculates the area of a rectangle.
+ * @param width The width of the rectangle.
+ * @param height The height of the rectangle.
+ * @returns The calculated area.
+ */
+FUNCTION CalculateArea(REAL width, REAL height)
+    RETURN width * height;
+END
+```
 Use `Ctrl+Alt+D` to automatically generate a doc skeleton for the function at your cursor.
 
+The style of doc comment can be configured in the `cicode.documentation.docskeleton.useBlockComment` and `cicode.documentation.docskeleton.doxygenStyle` configuration options.
 ## Requirements
 
 - VS Code 1.88.0 or higher
