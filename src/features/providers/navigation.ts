@@ -79,17 +79,23 @@ export function makeNavProviders(
         const funcEntry = indexer.getFunction(word);
         const varEntry = indexer.resolveVariableAt(document, position, word);
 
-        // For functions: use the cache when available
+        // Use the cache when available
         if (funcEntry) {
           const cached = refCache.getReferences(word);
           if (cached && refCache.isReady) {
+            console.log(
+              `Cicode refs: cache hit for "${word}" (${cached.count} refs)`,
+            );
             return refCache.toLocations(cached.refs);
           }
-          // Fallback: live scan
+          // Fallback tolive scan
+          console.log(
+            `Cicode refs: live scan for "${word}" (cache ready: ${refCache.isReady}, cached: ${!!cached})`,
+          );
           return liveScanAllFiles(word);
         }
 
-        // For variables: scope-limited live scan (already fast)
+        // For variables use scope-limited live scan
         if (varEntry) {
           if (varEntry.scopeType === "local") {
             if (varEntry.isParam) {
@@ -113,11 +119,11 @@ export function makeNavProviders(
           if (varEntry.scopeType === "module") {
             return liveScan(document.uri, word);
           }
-          // global variable – scan all files
+          // global variable. Scan all files
           return liveScanAllFiles(word);
         }
 
-        // Unknown symbol – scan all files
+        // Unknown symbol. Scan all files
         return liveScanAllFiles(word);
 
         // ---------------------------------------------------------------
@@ -139,6 +145,18 @@ export function makeNavProviders(
           const ignore = buildIgnoreSpans(searchText, {
             includeFunctionHeaders: false,
           });
+
+          // Build set of offsets where function names are defined
+          const defOffsets = new Set<number>();
+          for (const fr of indexer.getFunctionRanges(uri.fsPath)) {
+            let parenPos = text.indexOf("(", fr.headerIndex);
+            if (parenPos < 0) parenPos = fr.headerIndex;
+            const headerRegion = text.slice(fr.headerIndex, parenPos);
+            const nameRe = new RegExp(`\\b${escapeRegExp(fr.name)}\\b`, "i");
+            const nm = nameRe.exec(headerRegion);
+            if (nm) defOffsets.add(fr.headerIndex + nm.index);
+          }
+
           const escaped = escapeRegExp(target);
           const re = new RegExp(`\\b${escaped}\\b`, "g");
 
@@ -146,6 +164,7 @@ export function makeNavProviders(
           while ((m = re.exec(searchText))) {
             const abs = baseOffset + m.index;
             if (inSpan(m.index, ignore)) continue;
+            if (defOffsets.has(abs)) continue;
 
             const start = doc.positionAt(abs);
             const end = doc.positionAt(abs + target.length);

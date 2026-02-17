@@ -270,7 +270,7 @@ export function cleanParamName(param?: string | null): string {
   p = p.replace(/:$/, "");
   p = p.replace(/\s+/g, " ").trim();
   const m = p.match(/^[A-Za-z_]\w*/);
-  return m ? m[0] : p || "?";
+  return m ? m[0] : p;
 }
 
 export function leftWordRangeAt(
@@ -307,12 +307,22 @@ export function argLooksNamed(argText: string): boolean {
   return /^\s*[A-Za-z_]\w*\s*:\s*/.test(argText);
 }
 
-export function splitDeclNames(namesPart: string): string[] {
+export interface DeclName {
+  name: string;
+  arraySize: string | null;
+}
+
+export function splitDeclNames(namesPart: string): DeclName[] {
   return namesPart
     .split(",")
     .map((s) => s.trim())
     .map((s) => s.replace(/\s*=\s*.+$/, ""))
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((s) => {
+      const m = s.match(/^(\w+)\s*\[(.+)\]$/);
+      if (m) return { name: m[1], arraySize: m[2] };
+      return { name: s, arraySize: null };
+    });
 }
 
 function normalizeDocText(s: string): string {

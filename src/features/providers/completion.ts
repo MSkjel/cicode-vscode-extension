@@ -3,31 +3,55 @@ import type { Indexer } from "../../core/indexer/indexer";
 import { leftWordRangeAt } from "../../shared/textUtils";
 import { formatScopeType } from "../../shared/utils";
 
-const CI_KEYWORDS = [
-  "function",
+// ---------------------------------------------------------------------------
+// Keyword categories
+// ---------------------------------------------------------------------------
+
+const KW_CONTROL_FLOW = new Set([
+  "for",
+  "while",
   "if",
+  "repeat",
+  "do",
+  "select",
+  "case",
+]);
+
+const KW_CONTROL = new Set([
   "then",
   "else",
-  "do",
+  "end",
+  "end select",
   "to",
   "until",
-  "goto",
   "break",
   "continue",
+  "return",
   "exit",
   "abort",
+  "goto",
   "raise",
-  "return",
   "try",
   "except",
   "finally",
-  "select",
-  "case",
-  "end",
-  "end select",
-  "repeat",
-  "while",
-  "for",
+]);
+
+const KW_TYPES = new Set([
+  "int",
+  "real",
+  "string",
+  "object",
+  "boolean",
+  "void",
+  "long",
+  "ulong",
+  "quality",
+  "timestamp",
+]);
+
+const KW_SCOPE = new Set(["module", "global", "function", "private"]);
+
+const KW_OPERATORS = new Set([
   "and",
   "or",
   "not",
@@ -35,44 +59,102 @@ const CI_KEYWORDS = [
   "bitand",
   "bitor",
   "bitxor",
-  "module",
-  "global",
-  "boolean",
-  "int",
-  "real",
-  "void",
-  "long",
-  "ulong",
-  "string",
-  "object",
-  "quality",
-  "timestamp",
+]);
+
+const KW_OTHER = new Set([]);
+
+/** All keywords in a single iterable for the completion loop. */
+const ALL_KEYWORDS = [
+  ...KW_CONTROL_FLOW,
+  ...KW_CONTROL,
+  ...KW_TYPES,
+  ...KW_SCOPE,
+  ...KW_OPERATORS,
+  ...KW_OTHER,
 ];
 
-function matchCasing(src: string, sample: string) {
-  if (!sample) return src;
-  const allUpper = /^[A-Z_]+$/.test(sample);
-  const allLower = /^[a-z_]+$/.test(sample);
-  if (allUpper) return src.toUpperCase();
-  if (allLower) return src.toLowerCase();
-  return /^[A-Z]/.test(sample)
-    ? src[0].toUpperCase() + src.slice(1).toLowerCase()
-    : src;
+// ---------------------------------------------------------------------------
+// Sort prefixes
+// ---------------------------------------------------------------------------
+
+const SORT = {
+  LOCAL_VAR: "0A_",
+  MODULE_VAR: "0B_",
+  KW_HIGH: "0C_", // boosted keyword tier
+  KW_MID: "0D_", // default keyword tier
+  KW_LOW: "0E_", // demoted keyword tier
+  USER_FUNC: "0F_",
+  BUILTIN_FUNC: "0G_",
+  GLOBAL_VAR: "1_",
+} as const;
+
+// ---------------------------------------------------------------------------
+// Context detection
+// ---------------------------------------------------------------------------
+
+type CursorContext = "statement" | "expression" | "type" | "default";
+
+const TYPE_KW_RE = /\b(?:INT|REAL|STRING|OBJECT|BOOLEAN|VOID|LONG|ULONG)\s*$/i;
+const EXPR_TAIL_RE = /[=+\-*/<>!&|^(,]\s*$/;
+const STATEMENT_RE = /^[\t ]*\w*$/; // only whitespace + possibly the word being typed
+
+function detectContext(
+  document: vscode.TextDocument,
+  position: vscode.Position,
+): CursorContext {
+  const lineText = document
+    .lineAt(position.line)
+    .text.slice(0, position.character);
+
+  if (TYPE_KW_RE.test(lineText)) return "type";
+  if (EXPR_TAIL_RE.test(lineText)) return "expression";
+  if (STATEMENT_RE.test(lineText)) return "statement";
+  return "default";
 }
+
+// ---------------------------------------------------------------------------
+// Keyword → sortText mapping based on context
+// ---------------------------------------------------------------------------
+
+function keywordSortPrefix(kw: string, ctx: CursorContext): string {
+  if (KW_CONTROL_FLOW.has(kw)) {
+    return ctx === "statement" ? SORT.KW_HIGH : SORT.KW_LOW;
+  }
+  if (KW_CONTROL.has(kw)) {
+    return SORT.KW_MID;
+  }
+  if (KW_TYPES.has(kw)) {
+    return ctx === "type" || ctx === "statement" ? SORT.KW_HIGH : SORT.KW_MID;
+  }
+  if (KW_SCOPE.has(kw)) {
+    return ctx === "statement" ? SORT.KW_HIGH : SORT.KW_MID;
+  }
+  if (KW_OPERATORS.has(kw)) {
+    return ctx === "expression" ? SORT.KW_HIGH : SORT.KW_LOW;
+  }
+  // KW_OTHER
+  return SORT.KW_LOW;
+}
+
+// ---------------------------------------------------------------------------
+// Provider
+// ---------------------------------------------------------------------------
 
 export function makeCompletion(
   indexer: Indexer,
 ): vscode.CompletionItemProvider {
   // Cache function completion items — rebuilt only when the indexer changes
-  let cachedFuncItems: vscode.CompletionItem[] | null = null;
+  let cachedUserFuncItems: vscode.CompletionItem[] | null = null;
+  let cachedBuiltinFuncItems: vscode.CompletionItem[] | null = null;
 
   indexer.onIndexed(() => {
-    cachedFuncItems = null;
+    cachedUserFuncItems = null;
+    cachedBuiltinFuncItems = null;
   });
 
-  function getFunctionItems(): vscode.CompletionItem[] {
-    if (cachedFuncItems) return cachedFuncItems;
-    const items: vscode.CompletionItem[] = [];
+  function buildFunctionItems(): void {
+    const userItems: vscode.CompletionItem[] = [];
+    const builtinItems: vscode.CompletionItem[] = [];
     for (const [key, f] of indexer.getAllFunctions()) {
       const display = f.name || key;
       const signature = `${f.returnType || "VOID"} ${display}(${(f.params || []).join(", ")})`;
@@ -82,43 +164,59 @@ export function makeCompletion(
       );
       it.insertText = display;
       it.detail = signature;
-      it.sortText = `0_${display}`;
+
+      const isBuiltin = f.file === null;
+      it.sortText = `${isBuiltin ? SORT.BUILTIN_FUNC : SORT.USER_FUNC}${display}`;
+
       if (f.doc || f.returns) {
         const md = new vscode.MarkdownString();
         if (f.doc) md.appendMarkdown(f.doc);
         if (f.returns) md.appendMarkdown(`\n\n**Returns:** ${f.returns}`);
         it.documentation = md;
       }
-      items.push(it);
+
+      if (isBuiltin) {
+        builtinItems.push(it);
+      } else {
+        userItems.push(it);
+      }
     }
-    cachedFuncItems = items;
-    return items;
+    cachedUserFuncItems = userItems;
+    cachedBuiltinFuncItems = builtinItems;
+  }
+
+  function getFunctionItems(): vscode.CompletionItem[] {
+    if (!cachedUserFuncItems || !cachedBuiltinFuncItems) buildFunctionItems();
+    return [...cachedUserFuncItems!, ...cachedBuiltinFuncItems!];
   }
 
   return {
     provideCompletionItems(document, position) {
       const items: vscode.CompletionItem[] = [...getFunctionItems()];
 
+      const ctx = detectContext(document, position);
       const wr = leftWordRangeAt(document, position);
-      const typed = wr ? document.getText(wr) : "";
-      for (const kw of CI_KEYWORDS) {
-        const text = matchCasing(kw, typed);
+
+      // Keywords — always uppercase in Cicode
+      for (const kw of ALL_KEYWORDS) {
+        const upper = kw.toUpperCase();
         const it = new vscode.CompletionItem(
-          text,
+          upper,
           vscode.CompletionItemKind.Keyword,
         );
-        it.sortText = `0A_${kw}`;
+        it.sortText = `${keywordSortPrefix(kw, ctx)}${kw}`;
         it.commitCharacters = [" ", "\t", "\n", "(", ")", ",", ";"];
-        it.filterText = kw;
+        it.filterText = upper;
         it.command = {
           command: "cicode.addSpaceIfNeeded",
           title: "Add space if needed",
         };
         if (wr) it.range = wr;
-        it.insertText = text;
+        it.insertText = upper;
         items.push(it);
       }
 
+      // Variables
       const file = document.uri.fsPath;
       const current = indexer.findEnclosingFunction(document, position);
       const seen = new Set<string>();
@@ -140,7 +238,13 @@ export function makeCompletion(
           vscode.CompletionItemKind.Variable,
         );
         it.detail = detail;
-        it.sortText = `1_${v.name}`;
+        const prefix =
+          v.scopeType === "local"
+            ? SORT.LOCAL_VAR
+            : v.scopeType === "module"
+              ? SORT.MODULE_VAR
+              : SORT.GLOBAL_VAR;
+        it.sortText = `${prefix}${v.name}`;
         items.push(it);
       };
 
