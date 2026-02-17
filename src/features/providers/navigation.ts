@@ -83,11 +83,15 @@ export function makeNavProviders(
         if (funcEntry) {
           const cached = refCache.getReferences(word);
           if (cached && refCache.isReady) {
-            console.log(`Cicode refs: cache hit for "${word}" (${cached.count} refs)`);
+            console.log(
+              `Cicode refs: cache hit for "${word}" (${cached.count} refs)`,
+            );
             return refCache.toLocations(cached.refs);
           }
           // Fallback tolive scan
-          console.log(`Cicode refs: live scan for "${word}" (cache ready: ${refCache.isReady}, cached: ${!!cached})`);
+          console.log(
+            `Cicode refs: live scan for "${word}" (cache ready: ${refCache.isReady}, cached: ${!!cached})`,
+          );
           return liveScanAllFiles(word);
         }
 

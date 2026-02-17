@@ -46,7 +46,7 @@ const KW_TYPES = new Set([
   "long",
   "ulong",
   "quality",
-  "timestamp"
+  "timestamp",
 ]);
 
 const KW_SCOPE = new Set(["module", "global", "function", "private"]);
@@ -94,8 +94,7 @@ const SORT = {
 
 type CursorContext = "statement" | "expression" | "type" | "default";
 
-const TYPE_KW_RE =
-  /\b(?:INT|REAL|STRING|OBJECT|BOOLEAN|VOID|LONG|ULONG)\s*$/i;
+const TYPE_KW_RE = /\b(?:INT|REAL|STRING|OBJECT|BOOLEAN|VOID|LONG|ULONG)\s*$/i;
 const EXPR_TAIL_RE = /[=+\-*/<>!&|^(,]\s*$/;
 const STATEMENT_RE = /^[\t ]*\w*$/; // only whitespace + possibly the word being typed
 
