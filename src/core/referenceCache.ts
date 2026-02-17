@@ -294,6 +294,18 @@ export class ReferenceCache implements vscode.Disposable {
       ignore = buildIgnoreSpans(text, { includeFunctionHeaders: false });
     }
 
+    // Build set of offsets where function names are defined (not referenced)
+    const defOffsets = new Set<number>();
+    for (const fr of this.indexer.getFunctionRanges(file)) {
+      // Header region ends at the opening paren (name is always before it)
+      let parenPos = text.indexOf("(", fr.headerIndex);
+      if (parenPos < 0) parenPos = fr.headerIndex;
+      const headerRegion = text.slice(fr.headerIndex, parenPos);
+      const nameRe = new RegExp(`\\b${fr.name}\\b`, "i");
+      const nm = nameRe.exec(headerRegion);
+      if (nm) defOffsets.add(fr.headerIndex + nm.index);
+    }
+
     const symbolsFoundInFile = new Set<string>();
 
     const wordRe = /\b[A-Za-z_]\w*\b/g;
@@ -303,6 +315,7 @@ export class ReferenceCache implements vscode.Disposable {
       const key = m[0].toLowerCase();
       if (!functionNames.has(key)) continue;
       if (inSpan(m.index, ignore)) continue;
+      if (defOffsets.has(m.index)) continue;
 
       symbolsFoundInFile.add(key);
 

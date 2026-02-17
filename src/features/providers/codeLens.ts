@@ -26,14 +26,9 @@ export function makeCodeLens(
 
       for (const f of funcRanges) {
         const key = f.name.toLowerCase();
-        const total = refCache.getReferenceCount(key);
-        // Exclude the definition site itself from the displayed count
-        const funcInfo = indexer.getFunction(key);
-        const hasDef = funcInfo?.file != null ? 1 : 0;
-        const refCount = Math.max(0, total - hasDef);
+        const refCount = refCache.getReferenceCount(key);
 
-        // Anchor to the function name line (not the FUNCTION keyword),
-        // so the lens sits just above e.g. Alarm_Filter(STRING sTagName)
+        // Anchor to the function name line
         const nameLine = f.location.range.start.line;
         const anchor = new vscode.Position(nameLine, 0);
         const lens = new vscode.CodeLens(new vscode.Range(anchor, anchor), {
