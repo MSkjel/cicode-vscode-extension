@@ -307,12 +307,22 @@ export function argLooksNamed(argText: string): boolean {
   return /^\s*[A-Za-z_]\w*\s*:\s*/.test(argText);
 }
 
-export function splitDeclNames(namesPart: string): string[] {
+export interface DeclName {
+  name: string;
+  arraySize: string | null;
+}
+
+export function splitDeclNames(namesPart: string): DeclName[] {
   return namesPart
     .split(",")
     .map((s) => s.trim())
     .map((s) => s.replace(/\s*=\s*.+$/, ""))
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((s) => {
+      const m = s.match(/^(\w+)\s*\[(.+)\]$/);
+      if (m) return { name: m[1], arraySize: m[2] };
+      return { name: s, arraySize: null };
+    });
 }
 
 function normalizeDocText(s: string): string {

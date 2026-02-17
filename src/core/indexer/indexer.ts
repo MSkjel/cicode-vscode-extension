@@ -533,14 +533,15 @@ export class Indexer {
 
         const type = typeRaw.toUpperCase();
         const namesPart = m[3];
-        const names = splitDeclNames(namesPart);
+        const decls = splitDeclNames(namesPart);
         const namesRelStart = m.index + m[0].indexOf(namesPart);
 
-        for (const name of names) {
+        for (const { name, arraySize } of decls) {
           const nameRel = namesRelStart + Math.max(0, namesPart.indexOf(name));
           const abs = baseOffset + nameRel;
           const pos = doc.positionAt(abs);
           const loc = new vscode.Location(doc.uri, pos);
+          const displayType = arraySize ? `${type}[${arraySize}]` : type;
 
           const isGlobalKw = kw === "GLOBAL";
 
@@ -549,7 +550,7 @@ export class Indexer {
             if (isGlobalKw) {
               this._addVar(name, {
                 name,
-                type,
+                type: displayType,
                 scopeType: "global",
                 scopeId: "global",
                 location: loc,
@@ -560,7 +561,7 @@ export class Indexer {
             } else {
               this._addVar(name, {
                 name,
-                type,
+                type: displayType,
                 scopeType: "local",
                 scopeId: this.localScopeId(file, funcCtx.name),
                 location: loc,
@@ -573,7 +574,7 @@ export class Indexer {
             // Defensive: treat as module scope
             this._addVar(name, {
               name,
-              type,
+              type: displayType,
               scopeType: "module",
               scopeId: file,
               location: loc,
@@ -586,7 +587,7 @@ export class Indexer {
             if (isGlobalKw) {
               this._addVar(name, {
                 name,
-                type,
+                type: displayType,
                 scopeType: "global",
                 scopeId: "global",
                 location: loc,
@@ -597,7 +598,7 @@ export class Indexer {
             } else {
               this._addVar(name, {
                 name,
-                type,
+                type: displayType,
                 scopeType: "module",
                 scopeId: file,
                 location: loc,
