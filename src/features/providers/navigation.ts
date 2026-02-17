@@ -79,17 +79,19 @@ export function makeNavProviders(
         const funcEntry = indexer.getFunction(word);
         const varEntry = indexer.resolveVariableAt(document, position, word);
 
-        // For functions: use the cache when available
+        // Use the cache when available
         if (funcEntry) {
           const cached = refCache.getReferences(word);
           if (cached && refCache.isReady) {
+            console.log(`Cicode refs: cache hit for "${word}" (${cached.count} refs)`);
             return refCache.toLocations(cached.refs);
           }
-          // Fallback: live scan
+          // Fallback tolive scan
+          console.log(`Cicode refs: live scan for "${word}" (cache ready: ${refCache.isReady}, cached: ${!!cached})`);
           return liveScanAllFiles(word);
         }
 
-        // For variables: scope-limited live scan (already fast)
+        // For variables use scope-limited live scan
         if (varEntry) {
           if (varEntry.scopeType === "local") {
             if (varEntry.isParam) {

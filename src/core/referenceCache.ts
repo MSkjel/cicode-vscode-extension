@@ -56,6 +56,10 @@ export class ReferenceCache implements vscode.Disposable {
   // Track the set of known function names so we can detect additions/removals
   private _knownFunctions = new Set<string>();
 
+  // When true, a full build is in progress incremental updates are deferred.
+  private _fullBuildInProgress = false;
+  private readonly _pendingChanges = new Set<string>();
+
   constructor(
     private readonly indexer: Indexer,
     private readonly cfg: () => vscode.WorkspaceConfiguration,
@@ -164,6 +168,8 @@ export class ReferenceCache implements vscode.Disposable {
     this.symbolRefs.clear();
     this.fileIndex.clear();
     this._isReady = false;
+    this._fullBuildInProgress = true;
+    this._pendingChanges.clear();
 
     const functionNames = this._collectFunctionNames();
     this._knownFunctions = new Set(functionNames);
@@ -173,7 +179,7 @@ export class ReferenceCache implements vscode.Disposable {
 
     const BATCH_SIZE = 10;
     for (let i = 0; i < files.length; i += BATCH_SIZE) {
-      if (this._buildVersion !== version) return; // superseded
+      if (this._buildVersion !== version) return; // superseded by another _buildAll
       const batch = files.slice(i, i + BATCH_SIZE);
       for (const uri of batch) {
         await this._scanFile(uri, functionNames);
@@ -186,8 +192,18 @@ export class ReferenceCache implements vscode.Disposable {
     }
 
     if (this._buildVersion !== version) return;
+    this._fullBuildInProgress = false;
     this._isReady = true;
     this._onCacheUpdated.fire();
+
+    // Drain any file changes that arrived during the full build
+    if (this._pendingChanges.size > 0) {
+      const pending = [...this._pendingChanges];
+      this._pendingChanges.clear();
+      for (const file of pending) {
+        this._debouncedHandleChange(file);
+      }
+    }
   }
 
   // =========================================================================
@@ -195,12 +211,20 @@ export class ReferenceCache implements vscode.Disposable {
   // =========================================================================
 
   private async _handleFileChanged(changedFile: string): Promise<void> {
+    // Defer incremental updates while a full build is running the build
+    // scans everything anyway, and incrementing _buildVersion here would
+    // cancel it, leaving _isReady permanently false.
+    if (this._fullBuildInProgress) {
+      this._pendingChanges.add(changedFile);
+      return;
+    }
+
     const version = ++this._buildVersion;
 
-    // 1. Purge references sourced from the changed file
+    // Purge references sourced from the changed file
     this._purgeReferencesFromFile(changedFile);
 
-    // 2. Detect newly added / removed functions
+    // Detect newly added / removed functions
     const currentFunctions = this._collectFunctionNames();
     const newSymbols: string[] = [];
     for (const fn of currentFunctions) {
@@ -212,7 +236,7 @@ export class ReferenceCache implements vscode.Disposable {
     }
     this._knownFunctions = new Set(currentFunctions);
 
-    // 3. Re-scan the changed file for all known function names
+    // Re-scan the changed file for all known function names
     try {
       const uri = vscode.Uri.file(changedFile);
       await this._scanFile(uri, currentFunctions);
@@ -220,7 +244,7 @@ export class ReferenceCache implements vscode.Disposable {
       /* file may have been deleted */
     }
 
-    // 4. For newly added function names, scan ALL files
+    // For newly added function names, scan ALL files
     if (newSymbols.length > 0) {
       const newSet = new Set(newSymbols);
       const exclude = this._getExcludeGlob();
