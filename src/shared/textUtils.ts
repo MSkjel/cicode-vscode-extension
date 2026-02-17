@@ -270,7 +270,7 @@ export function cleanParamName(param?: string | null): string {
   p = p.replace(/:$/, "");
   p = p.replace(/\s+/g, " ").trim();
   const m = p.match(/^[A-Za-z_]\w*/);
-  return m ? m[0] : p || "?";
+  return m ? m[0] : p;
 }
 
 export function leftWordRangeAt(
