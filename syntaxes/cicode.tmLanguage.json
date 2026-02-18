@@ -265,7 +265,7 @@
           "name": "meta.block.if.cicode",
           "begin": "\\b(?i:if)\\b",
           "beginCaptures": { "0": { "name": "keyword.control.cicode" } },
-          "end": "(?i)^\\s*end\\b",
+          "end": "(?i)\\bend\\b",
           "endCaptures": { "0": { "name": "keyword.control.cicode" } },
           "applyEndPatternLast": true,
           "patterns": [{ "include": "#controlBlocks" }, { "include": "$self" }]
@@ -274,7 +274,7 @@
           "name": "meta.block.for.cicode",
           "begin": "\\b(?i:for)\\b",
           "beginCaptures": { "0": { "name": "keyword.control.cicode" } },
-          "end": "(?i)^\\s*end\\b",
+          "end": "(?i)\\bend\\b",
           "endCaptures": { "0": { "name": "keyword.control.cicode" } },
           "applyEndPatternLast": true,
           "patterns": [{ "include": "#controlBlocks" }, { "include": "$self" }]
@@ -283,7 +283,7 @@
           "name": "meta.block.while.cicode",
           "begin": "\\b(?i:while)\\b",
           "beginCaptures": { "0": { "name": "keyword.control.cicode" } },
-          "end": "(?i)^\\s*end\\b",
+          "end": "(?i)\\bend\\b",
           "endCaptures": { "0": { "name": "keyword.control.cicode" } },
           "applyEndPatternLast": true,
           "patterns": [{ "include": "#controlBlocks" }, { "include": "$self" }]
@@ -292,7 +292,7 @@
           "name": "meta.block.repeat.cicode",
           "begin": "\\b(?i:repeat)\\b",
           "beginCaptures": { "0": { "name": "keyword.control.cicode" } },
-          "end": "(?i)^\\s*end\\b",
+          "end": "(?i)\\bend\\b",
           "endCaptures": { "0": { "name": "keyword.control.cicode" } },
           "applyEndPatternLast": true,
           "patterns": [{ "include": "#controlBlocks" }, { "include": "$self" }]
@@ -301,7 +301,7 @@
           "name": "meta.block.try.cicode",
           "begin": "\\b(?i:try)\\b",
           "beginCaptures": { "0": { "name": "keyword.control.cicode" } },
-          "end": "(?i)^\\s*end\\b",
+          "end": "(?i)\\bend\\b",
           "endCaptures": { "0": { "name": "keyword.control.cicode" } },
           "applyEndPatternLast": true,
           "patterns": [{ "include": "#controlBlocks" }, { "include": "$self" }]
