@@ -59,9 +59,7 @@ export function registerProviders(
       vscode.languages.registerCompletionItemProvider(
         lang,
         makeCompletion(indexer),
-        ..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_".split(
-          "",
-        ),
+        ..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_".split(""),
       ),
     );
     disposables.push(makeDiagnostics(indexer, cfg));
