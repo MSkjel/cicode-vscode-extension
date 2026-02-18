@@ -2,7 +2,7 @@
   "name": "cicode-vscode-extension",
   "displayName": "Cicode Syntax Highlighting",
   "description": "Syntax highlighting and navigation for Cicode",
-  "version": "0.1.1-rc.0",
+  "version": "0.1.1",
   "publisher": "MSkjel",
   "repository": {
     "type": "git",
