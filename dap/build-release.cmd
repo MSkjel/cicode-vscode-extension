@@ -3,6 +3,7 @@
 :: /platform:x86 is mandatory - string.GetHashCode() must match CtCicode.exe (x86 .NET 4.x).
 :: Release build: no VERBOSE define, so only WRN entries are logged. No log file is created.
 setlocal
+cd /d "%~dp0"
 set CSC=C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe
 set OUT=cicode-debug-adapter.exe
 

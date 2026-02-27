@@ -3,6 +3,7 @@
 :: /platform:x86 is mandatory - string.GetHashCode() must match CtCicode.exe (x86 .NET 4.x).
 :: Defines VERBOSE so all log channels are active. Use build-release.cmd for a quiet build.
 setlocal
+cd /d "%~dp0"
 set CSC=C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe
 set OUT=cicode-debug-adapter.exe
 
