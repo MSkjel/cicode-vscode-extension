@@ -6,14 +6,35 @@ on:
       - "v*"
 
 jobs:
+  build-dap:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build DAP adapter
+        run: dap\build-release.cmd
+        shell: cmd
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dap-exe
+          path: dap/cicode-debug-adapter.exe
+
   build:
     runs-on: ubuntu-latest
+    needs: build-dap
     permissions:
       contents: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Download DAP adapter
+        uses: actions/download-artifact@v4
+        with:
+          name: dap-exe
+          path: dap/
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -22,9 +43,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Build (webpack)
-        run: npm run build
 
       - name: Package VS Code Extension
         run: npx vsce package
@@ -49,6 +67,7 @@ jobs:
         run: npx vsce publish -p $VSCE_PAT
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
       - name: Publish to Open VSX
         if: ${{ !contains(github.ref_name, '-') }}
         run: npx ovsx publish -p $OVSX_PAT

@@ -5,6 +5,10 @@ out/
 cache/
 logs/
 
+# Exclude dap source/build files
+dap/**
+!dap/cicode-debug-adapter.exe
+
 # Exclude config and build files
 .gitignore
 .vscode/

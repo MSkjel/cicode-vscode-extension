@@ -206,6 +206,45 @@
         }
       }
     },
+    "breakpoints": [
+      { "language": "cicode" }
+    ],
+    "debuggers": [
+      {
+        "type": "cicode",
+        "label": "Cicode Debug",
+        "languages": ["cicode"],
+        "configurationAttributes": {
+          "attach": {
+            "properties": {
+              "stripQualityTags": {
+                "type": "string",
+                "description": "Strip {Good}/{Bad} quality tags from variable values. Set to \"false\" to keep them.",
+                "default": "true"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "cicode",
+            "request": "attach",
+            "name": "Attach to SCADA Runtime"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Cicode: Attach to SCADA Runtime",
+            "description": "Attach the Cicode debugger to a running AVEVA SCADA runtime.",
+            "body": {
+              "type": "cicode",
+              "request": "attach",
+              "name": "Attach to SCADA Runtime"
+            }
+          }
+        ]
+      }
+    ],
     "views": {
       "explorer": [
         {
