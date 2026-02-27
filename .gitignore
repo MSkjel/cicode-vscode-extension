@@ -8,6 +8,10 @@ out/
 dist/
 *.vsix
 
+# DAP adapter build artifact and log
+dap/cicode-debug-adapter.exe
+dap/cicode-dap.log
+
 # Logs
 logs/
 *.log

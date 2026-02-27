@@ -124,6 +124,43 @@ END
 Use `Ctrl+Alt+D` to automatically generate a doc skeleton for the function at your cursor.
 
 The style of doc comment can be configured in the `cicode.documentation.docskeleton.useBlockComment` and `cicode.documentation.docskeleton.doxygenStyle` configuration options.
+## Debugger
+
+The extension includes a debugger that lets you set breakpoints and inspect local variables in Cicode while a Plant SCADA runtime is running.
+
+### Requirements
+
+- AVEVA Plant SCADA must be running on the same machine
+- The Cicode runtime must be running
+
+### How to use
+
+1. Open the **Run and Debug** panel (`Ctrl+Shift+D`)
+2. Add a launch configuration of type **"Cicode: Attach to SCADA Runtime"** (VS Code will offer to add one automatically)
+3. Click **Start Debugging** (or press `F5`)
+4. Set breakpoints by clicking the gutter in any `.ci` file
+5. Trigger the Cicode function in the runtime. Execution will pause at your breakpoint
+6. Inspect local variables in the **Variables** panel
+7. Use **Continue** (`F5`), **Step Over** (`F10`), **Step Into** (`F11`), or **Step Out** (`Shift+F11`) to control execution
+
+### What it can do
+
+- Set and remove breakpoints
+- Conditional breakpoints with simple comparisons against local variables (e.g. `myVar == 5`, `myVar = "SomeCoolString"`)
+- Pause at breakpoints and inspect local variable values
+- Step over, into, and out of functions
+- Show the current stopped location in the editor
+
+### What it cannot do
+
+- **Evaluate arbitrary expressions** or watch expressions
+- **Modify variable values** at runtime
+- **Complex conditions** in breakpoints (only simple `==`, `!=`, `<`, `>` comparisons against local variables)
+- **Debug across multiple machines**
+- **Pause the runtime**
+
+> **Note:** Removing a breakpoint while execution is paused will take effect when you next continue. The debugger reconnects in the background to clear the runtime breakpoint.
+
 ## Requirements
 
 - VS Code 1.88.0 or higher
