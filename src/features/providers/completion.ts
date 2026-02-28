@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
-import { leftWordRangeAt } from "../../shared/textUtils";
+import { isInCommentOrString, leftWordRangeAt } from "../../shared/textUtils";
 import { formatScopeType } from "../../shared/utils";
 
 // ---------------------------------------------------------------------------
@@ -92,7 +92,22 @@ const SORT = {
 // Context detection
 // ---------------------------------------------------------------------------
 
-type CursorContext = "statement" | "expression" | "type" | "default";
+type CursorContext =
+  | "statement"
+  | "expression"
+  | "type"
+  | "declaration"
+  | "funcdef"
+  | "default";
+
+// "declaration": after TYPE_KW + space + at least one identifier char being typed
+// e.g. "INT i", "REAL myV", "STRING s"
+const DECL_RE =
+  /\b(?:INT|REAL|STRING|OBJECT|BOOLEAN|VOID|LONG|ULONG|QUALITY|TIMESTAMP)\s+\w+$/i;
+
+// "funcdef": after FUNCTION keyword + space (+ optional chars being typed as function name)
+// e.g. "FUNCTION foo", "INT FUNCTION My"
+const FUNCDEF_RE = /\bFUNCTION\s+\w*$/i;
 
 const TYPE_KW_RE = /\b(?:INT|REAL|STRING|OBJECT|BOOLEAN|VOID|LONG|ULONG)\s*$/i;
 const EXPR_TAIL_RE = /[=+\-*/<>!&|^(,]\s*$/;
@@ -106,9 +121,23 @@ function detectContext(
     .lineAt(position.line)
     .text.slice(0, position.character);
 
+  // Most specific checks first
+  if (DECL_RE.test(lineText)) return "declaration";
+  if (FUNCDEF_RE.test(lineText)) return "funcdef";
   if (TYPE_KW_RE.test(lineText)) return "type";
   if (EXPR_TAIL_RE.test(lineText)) return "expression";
-  if (STATEMENT_RE.test(lineText)) return "statement";
+  if (STATEMENT_RE.test(lineText)) {
+    // Multiline function declaration: if the previous non-empty line ends with
+    // the FUNCTION keyword (e.g. "INT FUNCTION\nMyFunc|"), the cursor is in
+    // the function-name position even though the current line looks like a statement.
+    for (let i = position.line - 1; i >= Math.max(0, position.line - 3); i--) {
+      const prev = document.lineAt(i).text.trim();
+      if (!prev) continue; // skip blank lines
+      if (/\bFUNCTION\s*$/i.test(prev)) return "funcdef";
+      break; // first non-blank line is not a funcdef continuation
+    }
+    return "statement";
+  }
   return "default";
 }
 
@@ -192,13 +221,52 @@ export function makeCompletion(
 
   return {
     provideCompletionItems(document, position) {
-      const items: vscode.CompletionItem[] = [...getFunctionItems()];
+      // No completions inside strings or comments
+      if (isInCommentOrString(document, position)) return [];
 
       const ctx = detectContext(document, position);
       const wr = leftWordRangeAt(document, position);
 
-      // Keywords — always uppercase in Cicode
+      // Naming a new function — nothing useful to complete
+      if (ctx === "funcdef") return [];
+
+      const items: vscode.CompletionItem[] = [];
+
+      // Functions — skip when the user is about to name something
+      // ("type": right after a type kw; "declaration": type kw + partial identifier,
+      //  e.g. "INT F" should still show FUNCTION keyword but not existing functions)
+      if (ctx !== "type" && ctx !== "declaration") {
+        items.push(...getFunctionItems());
+      }
+
+      // Keywords always uppercase in Cicode, filtered by context
       for (const kw of ALL_KEYWORDS) {
+        // Hide keywords that are irrelevant in the current context
+        if (ctx === "expression") {
+          // In expressions only operators are useful; control flow, scope, and
+          // type keywords are never valid inside an expression
+          if (
+            KW_CONTROL_FLOW.has(kw) ||
+            KW_CONTROL.has(kw) ||
+            KW_SCOPE.has(kw) ||
+            KW_TYPES.has(kw)
+          )
+            continue;
+        } else if (ctx === "statement") {
+          // At line-start, operator keywords (AND, OR, NOT…) are never valid
+          if (KW_OPERATORS.has(kw)) continue;
+        } else if (ctx === "type" || ctx === "declaration") {
+          // After a type keyword (with or without a partial identifier already typed),
+          // only type/scope keywords are meaningful, this keeps FUNCTION
+          // visible so "INT F" still suggests "FUNCTION"
+          if (
+            KW_CONTROL_FLOW.has(kw) ||
+            KW_CONTROL.has(kw) ||
+            KW_OPERATORS.has(kw)
+          )
+            continue;
+        }
+
         const upper = kw.toUpperCase();
         const it = new vscode.CompletionItem(
           upper,
@@ -216,51 +284,53 @@ export function makeCompletion(
         items.push(it);
       }
 
-      // Variables
-      const file = document.uri.fsPath;
-      const current = indexer.findEnclosingFunction(document, position);
-      const seen = new Set<string>();
-      const pushVar = (v: {
-        name: string;
-        type: string;
-        scopeType: string;
-        scopeId: string;
-      }) => {
-        const k = `${v.name}|${v.scopeType}|${v.scopeId}`;
-        if (seen.has(k)) return;
-        seen.add(k);
-        const detail = formatScopeType(v.scopeType as any, {
-          includeType: true,
-          type: v.type,
-        });
-        const it = new vscode.CompletionItem(
-          v.name,
-          vscode.CompletionItemKind.Variable,
-        );
-        it.detail = detail;
-        const prefix =
-          v.scopeType === "local"
-            ? SORT.LOCAL_VAR
-            : v.scopeType === "module"
-              ? SORT.MODULE_VAR
-              : SORT.GLOBAL_VAR;
-        it.sortText = `${prefix}${v.name}`;
-        items.push(it);
-      };
+      // Variables, skip when the user is about to name something
+      if (ctx !== "type" && ctx !== "declaration") {
+        const file = document.uri.fsPath;
+        const current = indexer.findEnclosingFunction(document, position);
+        const seen = new Set<string>();
+        const pushVar = (v: {
+          name: string;
+          type: string;
+          scopeType: string;
+          scopeId: string;
+        }) => {
+          const k = `${v.name}|${v.scopeType}|${v.scopeId}`;
+          if (seen.has(k)) return;
+          seen.add(k);
+          const detail = formatScopeType(v.scopeType as any, {
+            includeType: true,
+            type: v.type,
+          });
+          const it = new vscode.CompletionItem(
+            v.name,
+            vscode.CompletionItemKind.Variable,
+          );
+          it.detail = detail;
+          const prefix =
+            v.scopeType === "local"
+              ? SORT.LOCAL_VAR
+              : v.scopeType === "module"
+                ? SORT.MODULE_VAR
+                : SORT.GLOBAL_VAR;
+          it.sortText = `${prefix}${v.name}`;
+          items.push(it);
+        };
 
-      // Single pass through variables with compound predicate
-      const localScopeId = current
-        ? indexer.localScopeId(file, current.name)
-        : null;
-      for (const v of indexer.getVariablesByPredicate(
-        (x) =>
-          (x.scopeType === "local" &&
-            localScopeId &&
-            x.scopeId === localScopeId) ||
-          (x.scopeType === "module" && x.scopeId === file) ||
-          x.scopeType === "global",
-      ))
-        pushVar(v);
+        // Single pass through variables with compound predicate
+        const localScopeId = current
+          ? indexer.localScopeId(file, current.name)
+          : null;
+        for (const v of indexer.getVariablesByPredicate(
+          (x) =>
+            (x.scopeType === "local" &&
+              localScopeId &&
+              x.scopeId === localScopeId) ||
+            (x.scopeType === "module" && x.scopeId === file) ||
+            x.scopeType === "global",
+        ))
+          pushVar(v);
+      }
 
       return items;
     },

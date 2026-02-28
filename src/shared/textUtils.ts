@@ -1,5 +1,19 @@
 import * as vscode from "vscode";
 
+export function isInCommentOrString(
+  document: vscode.TextDocument,
+  position: vscode.Position,
+): boolean {
+  const endOffset = document.offsetAt(position);
+  if (endOffset === 0) return false;
+  const startLine = Math.max(0, position.line - 100);
+  const startOffset = document.offsetAt(new vscode.Position(startLine, 0));
+  const text = document.getText().slice(startOffset, endOffset);
+  const spans = buildIgnoreSpans(text, { includeFunctionHeaders: false });
+  const posInSlice = endOffset - startOffset - 1;
+  return posInSlice >= 0 && inSpan(posInSlice, spans);
+}
+
 export const TYPE_RE =
   /^(INT|REAL|STRING|OBJECT|BOOL|BOOLEAN|LONG|ULONG|UNKNOWN|VOID)$/i;
 
@@ -313,16 +327,33 @@ export interface DeclName {
 }
 
 export function splitDeclNames(namesPart: string): DeclName[] {
-  return namesPart
-    .split(",")
+  // Split only at top-level commas (not inside parentheses/brackets) so that
+  // initializers like "= ArrayGetInt(a, b, c)" are treated as a single unit
+  // rather than being split into phantom variable names.
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < namesPart.length; i++) {
+    const c = namesPart[i];
+    if (c === "(" || c === "[") depth++;
+    else if (c === ")" || c === "]") depth = Math.max(0, depth - 1);
+    else if (c === "," && depth === 0) {
+      parts.push(namesPart.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(namesPart.slice(start));
+
+  return parts
     .map((s) => s.trim())
-    .map((s) => s.replace(/\s*=\s*.+$/, ""))
+    .map((s) => s.replace(/\s*=\s*.+$/, "").trim())
     .filter(Boolean)
     .map((s) => {
       const m = s.match(/^(\w+)\s*\[(.+)\]$/);
       if (m) return { name: m[1], arraySize: m[2] };
       return { name: s, arraySize: null };
-    });
+    })
+    .filter(({ name }) => /^[A-Za-z_]\w*$/.test(name));
 }
 
 function normalizeDocText(s: string): string {

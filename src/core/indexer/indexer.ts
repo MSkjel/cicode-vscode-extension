@@ -520,7 +520,7 @@ export class Indexer {
       const ignore = buildIgnoreSpans(sliceText);
       // Use [ \t]+ (not \s+) between type and names to avoid matching across newlines
       const declRe =
-        /^\s*(?:(GLOBAL|MODULE)[ \t]+)?(\w+)[ \t]+([^\r\n;]+)\s*;?/gim;
+        /^\s*(?:(GLOBAL|MODULE)[ \t]+)?(\w+)[ \t]+([^\r\n;]+)[ \t]*;?/gim;
       let m: RegExpExecArray | null;
 
       while ((m = declRe.exec(sliceText))) {
