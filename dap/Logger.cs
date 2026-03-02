@@ -8,14 +8,13 @@ namespace CicodeDebugAdapter
     /// No bracket strings in call sites. All output goes to stderr + cicode-dap.log.
     ///
     /// Build with /define:VERBOSE to enable all channels.
-    /// Release builds (no VERBOSE) only write WRN entries.
+    /// Release builds only write WRN entries.
     /// </summary>
     static class Logger
     {
         static StreamWriter _file;
         static readonly object _lock = new object();
 
-        // -- Channels ---------------------------------------------------------
         public static void Dap(string s)
         {
             WriteVerbose("DAP ", s);
@@ -76,7 +75,6 @@ namespace CicodeDebugAdapter
             Write("WRN ", s);
         } // always on
 
-        // -- Infrastructure ---------------------------------------------------
         public static void Open(string path)
         {
 #if VERBOSE

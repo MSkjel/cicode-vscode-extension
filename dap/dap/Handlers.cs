@@ -93,12 +93,7 @@ namespace CicodeDebugAdapter
                 IpcClient.Connect(pipeName);
                 DapState.Attached = true;
                 DapTransport.Response(seq, "attach", true);
-                DapTransport.Event(
-                    "output",
-                    "{\"category\":\"console\",\"output\":\"Connected to SCADA runtime ("
-                        + pipeName
-                        + ")\\n\"}"
-                );
+                DapTransport.Output("console", "Connected to SCADA runtime (" + pipeName + ")\n");
 
                 // If configurationDone already arrived before attach, sync pending BPs now.
                 if (DapState.ConfigDone)
@@ -222,9 +217,7 @@ namespace CicodeDebugAdapter
                     .Append(",\"line\":")
                     .Append(specs[i].Line);
                 if (condErr != null)
-                    bps.Append(",\"message\":\"")
-                        .Append(condErr.Replace("\\", "\\\\").Replace("\"", "\\\""))
-                        .Append("\"");
+                    bps.Append(",\"message\":").Append(Json.Str(condErr));
                 bps.Append("}");
             }
             bps.Append("]");
@@ -321,16 +314,9 @@ namespace CicodeDebugAdapter
         {
             int tid = args.GetInt("threadId", -1);
 
-            string file = null;
-            int line = 0;
-            lock (DapState.SessionLock)
-            {
-                if (tid >= 0 && DapState.ThreadFile.ContainsKey(tid))
-                {
-                    file = DapState.ThreadFile[tid];
-                    line = DapState.ThreadLine[tid];
-                }
-            }
+            string file;
+            int line;
+            DapState.TryGetThreadLocation(tid, out file, out line);
 
             string frame =
                 (file != null && line > 0)
@@ -364,22 +350,17 @@ namespace CicodeDebugAdapter
             lock (DapState.VarsLock)
             {
                 tid = DapState.StoppedThreadId;
-            }
-
-            if (tid >= 0)
-            {
-                lock (DapState.VarsLock)
+                if (tid >= 0)
                 {
                     DapState.StepWatchVars.Clear();
                     DapState.StepWatchPending = true;
-                }
-                IpcClient.SendCmd(IpcClient.CMD_GET_STEP_WATCH, BitConverter.GetBytes((uint)tid));
-
-                lock (DapState.VarsLock)
-                {
                     DapState.LocalVars.Clear();
                     DapState.LocalVarsPending = true;
                 }
+            }
+            if (tid >= 0)
+            {
+                IpcClient.SendCmd(IpcClient.CMD_GET_STEP_WATCH, BitConverter.GetBytes((uint)tid));
                 IpcClient.SendCmd(IpcClient.CMD_GET_LOCALS_LIVE, BitConverter.GetBytes((uint)tid));
             }
 
@@ -399,53 +380,48 @@ namespace CicodeDebugAdapter
             int varRef = args.GetInt("variablesReference");
 
             if (varRef == 2)
-            {
-                // Locals (from CMD_GET_LOCALS_LIVE), wait up to 500 ms
-                DapState.LocalsReady.Wait(500);
-                Dictionary<string, string> vars;
-                lock (DapState.VarsLock)
-                {
-                    vars = new Dictionary<string, string>(DapState.LocalVars);
-                }
-                DapTransport.Response(
+                RespondWithVariables(
                     seq,
-                    "variables",
-                    true,
-                    "{\"variables\":"
-                        + BuildVarArray(
-                            vars,
-                            "(pending)",
-                            "Local variable data not yet received. check cicode-dap.log for 0x102a response"
-                        )
-                        + "}"
+                    DapState.LocalsReady,
+                    500,
+                    DapState.LocalVars,
+                    "(pending)",
+                    "Local variable data not yet received. check cicode-dap.log for 0x102a response"
                 );
-            }
             else if (varRef == 1)
-            {
-                // Step Watch (from CMD_GET_STEP_WATCH), wait up to 400 ms
-                DapState.StepWatchReady.Wait(400);
-                Dictionary<string, string> vars;
-                lock (DapState.VarsLock)
-                {
-                    vars = new Dictionary<string, string>(DapState.StepWatchVars);
-                }
-                DapTransport.Response(
+                RespondWithVariables(
                     seq,
-                    "variables",
-                    true,
-                    "{\"variables\":"
-                        + BuildVarArray(
-                            vars,
-                            "(none)",
-                            "No step-watch variables configured in runtime"
-                        )
-                        + "}"
+                    DapState.StepWatchReady,
+                    400,
+                    DapState.StepWatchVars,
+                    "(none)",
+                    "No step-watch variables configured in runtime"
                 );
-            }
             else
-            {
                 DapTransport.Response(seq, "variables", true, "{\"variables\":[]}");
+        }
+
+        static void RespondWithVariables(
+            int seq,
+            ManualResetEventSlim ready,
+            int timeoutMs,
+            Dictionary<string, string> source,
+            string emptyName,
+            string emptyValue
+        )
+        {
+            ready.Wait(timeoutMs);
+            Dictionary<string, string> vars;
+            lock (DapState.VarsLock)
+            {
+                vars = new Dictionary<string, string>(source);
             }
+            DapTransport.Response(
+                seq,
+                "variables",
+                true,
+                "{\"variables\":" + BuildVarArray(vars, emptyName, emptyValue) + "}"
+            );
         }
 
         static void OnDisconnect(int seq)

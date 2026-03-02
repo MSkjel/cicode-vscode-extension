@@ -50,6 +50,34 @@ namespace CicodeDebugAdapter
         public static Stream Stdout;
         public static readonly object StdoutLock = new object();
 
+        /// <summary>Record a thread's current source location (thread-safe).</summary>
+        public static void SetThreadLocation(int tid, string file, int line)
+        {
+            lock (SessionLock)
+            {
+                Threads.Add(tid);
+                ThreadFile[tid] = file;
+                ThreadLine[tid] = line;
+            }
+        }
+
+        /// <summary>Read a thread's source location. Returns false if unknown.</summary>
+        public static bool TryGetThreadLocation(int tid, out string file, out int line)
+        {
+            lock (SessionLock)
+            {
+                if (ThreadFile.ContainsKey(tid))
+                {
+                    file = ThreadFile[tid];
+                    line = ThreadLine[tid];
+                    return true;
+                }
+            }
+            file = null;
+            line = 0;
+            return false;
+        }
+
         /// <summary>
         /// Reset per-session state after a disconnect.
         /// Preserves pending breakpoints so they can be re-sent on re-attach.
