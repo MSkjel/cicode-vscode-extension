@@ -11,6 +11,7 @@ dist/
 # DAP adapter build artifact and log
 dap/cicode-debug-adapter.exe
 dap/cicode-dap.log
+dap/obj/
 
 # Logs
 logs/

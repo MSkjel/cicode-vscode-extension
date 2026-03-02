@@ -26,6 +26,18 @@ namespace CicodeDebugAdapter
         public static string TnTran =
             "Citect.Platform.Net.Message.TranEncapsulationMessage, Citect.Platform.Net.Message, Version=8.40.0.0, Culture=neutral, PublicKeyToken=13aaee2494f61799";
 
+        // RuntimeManager pipe message types (in Citect.CitectSCADA.PlatformMessages.dll)
+        // Hashes are computed in Init() from the type name strings below.
+        public static uint HashProcessInfoChanged;
+        public static string TnProcessInfoChanged =
+            "Citect.CitectSCADA.PlatformMessages.ProcessInfoChangedMessage, "
+            + "Citect.CitectSCADA.PlatformMessages, Version=8.40.0.0, Culture=neutral, PublicKeyToken=13aaee2494f61799";
+
+        public static uint HashRtMsg;
+        public static string TnRtMsg =
+            "Citect.CitectSCADA.PlatformMessages.RuntimeManagerTimestampedMessage, "
+            + "Citect.CitectSCADA.PlatformMessages, Version=8.40.0.0, Culture=neutral, PublicKeyToken=13aaee2494f61799";
+
         public static void Init()
         {
             string dllPath = FindDll();
@@ -33,41 +45,48 @@ namespace CicodeDebugAdapter
             {
                 // I dont think they actually change anyways. It will probably break if they do
                 Logger.Scada("Citect.Platform.Net.Message.dll not found. using v8.40 defaults");
-                return;
             }
-
-            try
+            else
             {
-                Assembly asm = Assembly.ReflectionOnlyLoadFrom(dllPath);
-                Version ver = asm.GetName().Version;
+                try
+                {
+                    Assembly asm = Assembly.ReflectionOnlyLoadFrom(dllPath);
+                    Version ver = asm.GetName().Version;
 
-                // MSG_VERSION encoding used in IdentifyMessage: major*1000 + minor*10
-                MsgVersion = (short)(ver.Major * 1000 + ver.Minor * 10);
+                    // MSG_VERSION encoding used in IdentifyMessage: major*1000 + minor*10
+                    MsgVersion = (short)(ver.Major * 1000 + ver.Minor * 10);
 
-                ScanTypes(asm, primary: true);
+                    ScanTypes(asm, primary: true);
 
-                // Legacy companion assembly lives in the same bin folder.
-                string legacyPath = Path.Combine(
-                    Path.GetDirectoryName(dllPath),
-                    "Citect.CitectSCADA.PlatformMessages.dll"
-                );
-                if (File.Exists(legacyPath))
-                    ScanTypes(Assembly.ReflectionOnlyLoadFrom(legacyPath), primary: false);
+                    // Legacy companion assembly lives in the same bin folder.
+                    string legacyPath = Path.Combine(
+                        Path.GetDirectoryName(dllPath),
+                        "Citect.CitectSCADA.PlatformMessages.dll"
+                    );
+                    if (File.Exists(legacyPath))
+                        ScanTypes(Assembly.ReflectionOnlyLoadFrom(legacyPath), primary: false);
 
-                Logger.Scada(
-                    string.Format(
-                        "Detected v{0}.{1}. MSG_VERSION=0x{2:X4}  HASH_HB=0x{3:X8}",
-                        ver.Major,
-                        ver.Minor,
-                        (ushort)MsgVersion,
-                        HashHb
-                    )
-                );
+                    Logger.Scada(
+                        string.Format(
+                            "Detected v{0}.{1}. MSG_VERSION=0x{2:X4}  HASH_HB=0x{3:X8}",
+                            ver.Major,
+                            ver.Minor,
+                            (ushort)MsgVersion,
+                            HashHb
+                        )
+                    );
+                }
+                catch (Exception ex)
+                {
+                    Logger.Scada("Failed to reflect DLL, using v8.40 defaults: " + ex.Message);
+                }
             }
-            catch (Exception ex)
-            {
-                Logger.Scada("Failed to reflect DLL, using v8.40 defaults: " + ex.Message);
-            }
+
+            // Compute RuntimeManager type hashes from current type name strings.
+            // ScanTypes() may have updated TnProcessInfoChanged/TnRtMsg when the DLL was
+            // found; otherwise they remain at the v8.40 defaults above.
+            HashProcessInfoChanged = (uint)TnProcessInfoChanged.GetHashCode();
+            HashRtMsg = (uint)TnRtMsg.GetHashCode();
         }
 
         /// <summary>
@@ -114,8 +133,18 @@ namespace CicodeDebugAdapter
                 }
                 else
                 {
-                    if (t.Name == "TranEncapsulationMessage")
-                        HashTranLegacy = (uint)aqn.GetHashCode();
+                    switch (t.Name)
+                    {
+                        case "TranEncapsulationMessage":
+                            HashTranLegacy = (uint)aqn.GetHashCode();
+                            break;
+                        case "ProcessInfoChangedMessage":
+                            TnProcessInfoChanged = aqn;
+                            break;
+                        case "RuntimeManagerTimestampedMessage":
+                            TnRtMsg = aqn;
+                            break;
+                    }
                 }
             }
         }

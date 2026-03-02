@@ -20,7 +20,9 @@ set OUT=cicode-debug-adapter.exe
   Dap\Transport.cs ^
   Dap\Handlers.cs ^
   Ipc\ScadaVersion.cs ^
-  Ipc\Client.cs 2>&1
+  Ipc\PaClient.cs ^
+  Ipc\DebugClient.cs ^
+  Ipc\RuntimeClient.cs 2>&1
 
 if %ERRORLEVEL% == 0 (
     echo.

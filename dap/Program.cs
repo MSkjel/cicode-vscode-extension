@@ -35,6 +35,7 @@ namespace CicodeDebugAdapter
 
             IpcClient.InitCrc();
             ScadaVersion.Init();
+            RuntimeClient.Start();
 
             var stdin = Console.OpenStandardInput();
             var stdinBuf = new byte[65536];

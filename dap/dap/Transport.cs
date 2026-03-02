@@ -49,14 +49,22 @@ namespace CicodeDebugAdapter
         public static void Event(string evtName, string body = null)
         {
             int seq = Interlocked.Increment(ref DapState.Seq);
-            Send(
-                "{\"seq\":"
-                    + seq
-                    + ",\"type\":\"event\",\"event\":"
-                    + Json.Str(evtName)
-                    + ",\"body\":"
-                    + (body ?? "{}")
-                    + "}"
+            var sb = new StringBuilder();
+            sb.Append("{\"seq\":")
+                .Append(seq)
+                .Append(",\"type\":\"event\",\"event\":")
+                .Append(Json.Str(evtName))
+                .Append(",\"body\":")
+                .Append(body ?? "{}")
+                .Append("}");
+            Send(sb.ToString());
+        }
+
+        public static void Output(string category, string text)
+        {
+            Event(
+                "output",
+                "{\"category\":" + Json.Str(category) + ",\"output\":" + Json.Str(text) + "}"
             );
         }
     }
