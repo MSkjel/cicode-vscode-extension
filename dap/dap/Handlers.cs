@@ -60,6 +60,9 @@ namespace CicodeDebugAdapter
                 case "variables":
                     OnVariables(seq, args);
                     break;
+                case "evaluate":
+                    OnEvaluate(seq, args);
+                    break;
                 case "disconnect":
                 case "terminate":
                     OnDisconnect(seq);
@@ -422,6 +425,31 @@ namespace CicodeDebugAdapter
                 true,
                 "{\"variables\":" + BuildVarArray(vars, emptyName, emptyValue) + "}"
             );
+        }
+
+        static void OnEvaluate(int seq, Dictionary<string, object> args)
+        {
+            string expr = args.GetStr("expression") ?? "";
+
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    string result = CtApiClient.Execute(expr);
+                    if (result.Length == 0)
+                        result = "(void)";
+                    DapTransport.Response(
+                        seq,
+                        "evaluate",
+                        true,
+                        "{\"result\":" + Json.Str(result) + ",\"variablesReference\":0}"
+                    );
+                }
+                catch (Exception ex)
+                {
+                    DapTransport.Response(seq, "evaluate", false, null, ex.Message);
+                }
+            });
         }
 
         static void OnDisconnect(int seq)

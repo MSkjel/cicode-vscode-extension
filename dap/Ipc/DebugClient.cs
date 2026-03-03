@@ -160,6 +160,7 @@ namespace CicodeDebugAdapter
                 SendTranCmd(IpcClient.CMD_SESSION_STOP, new byte[4]);
             }
             catch { }
+            CtApiClient.Close();
             try
             {
                 _pipe.Close();

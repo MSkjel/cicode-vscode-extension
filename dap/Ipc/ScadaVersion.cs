@@ -33,6 +33,8 @@ namespace CicodeDebugAdapter
             "Citect.CitectSCADA.PlatformMessages.ProcessInfoChangedMessage, "
             + "Citect.CitectSCADA.PlatformMessages, Version=8.40.0.0, Culture=neutral, PublicKeyToken=13aaee2494f61799";
 
+        public static string BinFolder;
+
         public static uint HashRtMsg;
         public static string TnRtMsg =
             "Citect.CitectSCADA.PlatformMessages.RuntimeManagerTimestampedMessage, "
@@ -176,7 +178,10 @@ namespace CicodeDebugAdapter
                                     "Citect.Platform.Net.Message.dll"
                                 );
                                 if (File.Exists(p))
+                                {
+                                    BinFolder = binFolder;
                                     return p;
+                                }
                             }
                         }
                     }
