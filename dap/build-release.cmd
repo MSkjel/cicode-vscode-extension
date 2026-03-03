@@ -21,6 +21,7 @@ set OUT=cicode-debug-adapter.exe
   Dap\Handlers.cs ^
   Ipc\ScadaVersion.cs ^
   Ipc\PaClient.cs ^
+  Ipc\CtApiClient.cs ^
   Ipc\DebugClient.cs ^
   Ipc\RuntimeClient.cs 2>&1
 
