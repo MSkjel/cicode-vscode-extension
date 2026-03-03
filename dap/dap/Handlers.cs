@@ -82,7 +82,6 @@ namespace CicodeDebugAdapter
                 "{\"supportsConfigurationDoneRequest\":true,"
                     + "\"supportsTerminateRequest\":true,"
                     + "\"supportsConditionalBreakpoints\":true,"
-                    + "\"supportsEvaluateForHovers\":true,"
                     + "\"supportsStepBack\":false}"
             );
             DapTransport.Event("initialized");
@@ -431,31 +430,7 @@ namespace CicodeDebugAdapter
         static void OnEvaluate(int seq, Dictionary<string, object> args)
         {
             string expr = args.GetStr("expression") ?? "";
-            string context = args.GetStr("context") ?? "repl";
 
-            // Hover: check already-fetched locals/watch vars first (no CTAPI round-trip needed)
-            if (context == "hover")
-            {
-                string val = null;
-                lock (DapState.VarsLock)
-                {
-                    if (!DapState.LocalVars.TryGetValue(expr, out val))
-                        DapState.StepWatchVars.TryGetValue(expr, out val);
-                }
-                if (val != null)
-                {
-                    DapTransport.Response(
-                        seq,
-                        "evaluate",
-                        true,
-                        "{\"result\":" + Json.Str(val) + ",\"variablesReference\":0}"
-                    );
-                    return;
-                }
-            }
-
-            // ctCiCode can block if the Cicode runtime is busy — run off the DAP handler
-            // thread so the message loop stays responsive (e.g. for disconnect requests).
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 try
