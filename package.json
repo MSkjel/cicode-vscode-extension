@@ -163,6 +163,18 @@
           "default": true,
           "description": "Warn about variables that are declared but never used."
         },
+        "cicode.lint.maxCallNestingDepth": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "description": "Warn when function calls are nested deeper than this level (0 = disable)."
+        },
+        "cicode.lint.maxBlockNestingDepth": {
+          "type": "number",
+          "default": 4,
+          "minimum": 0,
+          "description": "Warn when control flow blocks (IF/FOR/WHILE/etc.) are nested deeper than this level (0 = disable)."
+        },
         "cicode.lint.warnMagicNumbers": {
           "type": "boolean",
           "default": false,

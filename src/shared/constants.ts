@@ -47,6 +47,34 @@ export const BLOCK_START_KEYWORDS = new Set([
   "SELECT",
 ]);
 
+/**
+ * Block-opening keywords that can appear inside a function body.
+ * Same as BLOCK_START_KEYWORDS but excludes FUNCTION (no nested functions in Cicode).
+ */
+export const BLOCK_OPENERS = new Set([
+  "IF",
+  "FOR",
+  "WHILE",
+  "REPEAT",
+  "TRY",
+  "SELECT",
+]);
+
+/**
+ * Structural keywords that are part of block syntax but do not represent
+ * executable statements on their own (e.g. THEN after IF, DO after WHILE).
+ */
+export const STRUCTURAL_KEYWORDS = new Set([
+  "THEN",
+  "DO",
+  "ELSE",
+  "EXCEPT",
+  "FINALLY",
+  "CASE",
+  "TO",
+  "STEP",
+]);
+
 /** Keywords that indicate statement boundaries */
 export const STATEMENT_BOUNDARY_KEYWORDS = new Set(["END", "FUNCTION"]);
 

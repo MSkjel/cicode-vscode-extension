@@ -182,6 +182,8 @@ export interface LintConfig {
   warnKeywordCase: boolean;
   warnMagicNumbers: boolean;
   warnUnusedVariables: boolean;
+  maxCallNestingDepth: number;
+  maxBlockNestingDepth: number;
   ignoredFunctions: string[];
 }
 
@@ -198,6 +200,8 @@ export function getLintConfig(
     warnKeywordCase: c.get("cicode.lint.warnKeywordCase", true),
     warnMagicNumbers: c.get("cicode.lint.warnMagicNumbers", false),
     warnUnusedVariables: c.get("cicode.lint.warnUnusedVariables", true),
+    maxCallNestingDepth: c.get("cicode.lint.maxCallNestingDepth", 5),
+    maxBlockNestingDepth: c.get("cicode.lint.maxBlockNestingDepth", 4),
     ignoredFunctions: (
       c.get("cicode.diagnostics.ignoredFunctions", []) as string[]
     ).map((f) => f.toLowerCase()),

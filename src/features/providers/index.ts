@@ -4,7 +4,7 @@ import { ReferenceCache } from "../../core/referenceCache";
 import { makeSymbols } from "./symbols";
 import { makeNavProviders } from "./navigation";
 import { makeCompletion } from "./completion";
-import { makeDiagnostics } from "./diagnostics";
+import { registerDiagnostics } from "../diagnostics/index";
 import { makeRename } from "./rename";
 import { makeFolding } from "./folding";
 import { makeInlay } from "./inlay";
@@ -62,7 +62,7 @@ export function registerProviders(
         ..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_".split(""),
       ),
     );
-    disposables.push(makeDiagnostics(indexer, cfg));
+    disposables.push(registerDiagnostics(indexer, cfg));
     disposables.push(
       vscode.languages.registerRenameProvider(
         "cicode",
