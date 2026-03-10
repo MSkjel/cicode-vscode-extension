@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import { CICODE_TYPES_PATTERN } from "../../shared/constants";
 import * as path from "path";
 import * as vscode from "vscode";
 import * as cheerio from "cheerio";
@@ -205,7 +206,7 @@ function extractReturnType($: cheerio.CheerioAPI): string {
   const retText = $("p.SubHeading:contains('Return Value')").next("p").text();
   if (!retText) return "UNKNOWN";
   const first = squish(retText).split(/\s+/)[0] || "";
-  return /^(INT|REAL|STRING|OBJECT|BOOL|BOOLEAN|LONG|ULONG|VOID)$/i.test(first)
+  return new RegExp(`^(${CICODE_TYPES_PATTERN})$`, "i").test(first)
     ? first.toUpperCase()
     : "UNKNOWN";
 }

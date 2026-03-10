@@ -182,9 +182,11 @@ export interface LintConfig {
   warnKeywordCase: boolean;
   warnMagicNumbers: boolean;
   warnUnusedVariables: boolean;
+  warnUndeclaredVariables: boolean;
+  ignoredUndeclaredVariables: RegExp[];
   maxCallNestingDepth: number;
   maxBlockNestingDepth: number;
-  ignoredFunctions: string[];
+  ignoredFunctions: RegExp[];
 }
 
 /** Get all lint config values at once */
@@ -200,10 +202,14 @@ export function getLintConfig(
     warnKeywordCase: c.get("cicode.lint.warnKeywordCase", true),
     warnMagicNumbers: c.get("cicode.lint.warnMagicNumbers", false),
     warnUnusedVariables: c.get("cicode.lint.warnUnusedVariables", true),
+    warnUndeclaredVariables: c.get("cicode.diagnostics.warnUndeclaredVariables", true),
+    ignoredUndeclaredVariables: (
+      c.get("cicode.diagnostics.ignoredUndeclaredVariables", []) as string[]
+    ).map((v) => new RegExp(v, "i")),
     maxCallNestingDepth: c.get("cicode.lint.maxCallNestingDepth", 5),
     maxBlockNestingDepth: c.get("cicode.lint.maxBlockNestingDepth", 4),
     ignoredFunctions: (
       c.get("cicode.diagnostics.ignoredFunctions", []) as string[]
-    ).map((f) => f.toLowerCase()),
+    ).map((f) => new RegExp(f, "i")),
   };
 }

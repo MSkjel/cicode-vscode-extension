@@ -34,7 +34,7 @@ export const functionCallsRule: Rule = {
       const name = m[1];
       if (
         KEYWORDS_WITH_PAREN.has(name.toUpperCase()) ||
-        ignoredFuncs.has(name.toLowerCase())
+        ignoredFuncs.some((re) => re.test(name))
       ) {
         continue;
       }
