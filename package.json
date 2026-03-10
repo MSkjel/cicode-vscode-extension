@@ -2,7 +2,7 @@
   "name": "cicode-vscode-extension",
   "displayName": "Cicode Syntax Highlighting",
   "description": "Syntax highlighting and navigation for Cicode",
-  "version": "0.3.1-rc.0",
+  "version": "0.3.1-rc.1",
   "publisher": "MSkjel",
   "repository": {
     "type": "git",
@@ -170,7 +170,9 @@
         },
         "cicode.diagnostics.ignoredUndeclaredVariables": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Regex patterns for variable names to exclude from the undeclared variable check (e.g. \"^My_\")."
         },
