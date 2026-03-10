@@ -352,8 +352,10 @@ export class Indexer {
 
       // Check for type on same line: "INT FUNCTION foo()"
       const lastLine = beforeLines[beforeLines.length - 1] || "";
-      const sameLineMatch =
-        new RegExp(`\\b(${CICODE_TYPES_PATTERN})\\s*$`, "i").exec(lastLine);
+      const sameLineMatch = new RegExp(
+        `\\b(${CICODE_TYPES_PATTERN})\\s*$`,
+        "i",
+      ).exec(lastLine);
 
       if (sameLineMatch) {
         returnType = sameLineMatch[1].toUpperCase();
@@ -374,8 +376,10 @@ export class Indexer {
           if (line.endsWith(";")) break;
           if (/\b(END|IF|FOR|WHILE|SELECT)\b/i.test(line)) break;
 
-          const mType =
-            new RegExp(`^(?:(?:private|public|global|module|const|static)\\s+)*(${CICODE_TYPES_PATTERN})\\s*$`, "i").exec(line);
+          const mType = new RegExp(
+            `^(?:(?:private|public|global|module|const|static)\\s+)*(${CICODE_TYPES_PATTERN})\\s*$`,
+            "i",
+          ).exec(line);
           if (mType) {
             returnType = mType[1].toUpperCase();
             break;

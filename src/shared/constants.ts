@@ -42,12 +42,7 @@ export const BLOCK_START_KEYWORDS = new Set([
  * Block-opening keywords that can appear inside a function body.
  * Same as BLOCK_START_KEYWORDS but excludes FUNCTION (no nested functions in Cicode).
  */
-export const BLOCK_OPENERS = new Set([
-  "IF",
-  "FOR",
-  "WHILE",
-  "SELECT",
-]);
+export const BLOCK_OPENERS = new Set(["IF", "FOR", "WHILE", "SELECT"]);
 
 /**
  * Structural keywords that are part of block syntax but do not represent
@@ -67,11 +62,20 @@ export const STATEMENT_BOUNDARY_KEYWORDS = new Set(["END", "FUNCTION"]);
 /** Scope and flow keywords that are not variables or function calls */
 export const MISC_KEYWORDS = new Set([
   // Storage modifiers
-  "GLOBAL", "MODULE", "PRIVATE", "PUBLIC",
+  "GLOBAL",
+  "MODULE",
+  "PRIVATE",
+  "PUBLIC",
   // Operator keywords
-  "AND", "OR", "NOT", "MOD", "BITAND", "BITOR",
+  "AND",
+  "OR",
+  "NOT",
+  "MOD",
+  "BITAND",
+  "BITOR",
   // Literals
-  "TRUE", "FALSE",
+  "TRUE",
+  "FALSE",
 ]);
 
 /** Valid Cicode type names */

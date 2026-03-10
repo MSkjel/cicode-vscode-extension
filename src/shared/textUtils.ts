@@ -279,7 +279,10 @@ export function cleanParamName(param?: string | null): string {
   p = p.replace(/\s*=\s*[^,)]+$/, "").trim();
   p = p.replace(/^(GLOBAL|LOCAL|CONST|PUBLIC|PRIVATE)\s+/i, "");
   p = p.replace(new RegExp(`^(${CICODE_TYPES_PATTERN}|UNKNOWN)\\s+`, "i"), "");
-  p = p.replace(new RegExp(`:\\s*(${CICODE_TYPES_PATTERN}|UNKNOWN)\\b`, "i"), "");
+  p = p.replace(
+    new RegExp(`:\\s*(${CICODE_TYPES_PATTERN}|UNKNOWN)\\b`, "i"),
+    "",
+  );
   p = p.replace(/:$/, "");
   p = p.replace(/\s+/g, " ").trim();
   const m = p.match(/^[A-Za-z_]\w*/);

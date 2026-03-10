@@ -286,14 +286,38 @@ export function splitParamsTopLevel(raw: string): string[] {
 
   for (let i = 0; i < raw.length; i++) {
     const ch = raw[i];
-    if (esc) { esc = false; continue; }
-    if (ch === "^") { esc = true; continue; }
-    if (inDQ) { if (ch === '"') inDQ = false; continue; }
-    if (inSQ) { if (ch === "'") inSQ = false; continue; }
-    if (ch === '"') { inDQ = true; continue; }
-    if (ch === "'") { inSQ = true; continue; }
-    if (ch === "(") { depth++; continue; }
-    if (ch === ")") { depth--; continue; }
+    if (esc) {
+      esc = false;
+      continue;
+    }
+    if (ch === "^") {
+      esc = true;
+      continue;
+    }
+    if (inDQ) {
+      if (ch === '"') inDQ = false;
+      continue;
+    }
+    if (inSQ) {
+      if (ch === "'") inSQ = false;
+      continue;
+    }
+    if (ch === '"') {
+      inDQ = true;
+      continue;
+    }
+    if (ch === "'") {
+      inSQ = true;
+      continue;
+    }
+    if (ch === "(") {
+      depth++;
+      continue;
+    }
+    if (ch === ")") {
+      depth--;
+      continue;
+    }
     if (ch === "," && depth === 0) {
       result.push(raw.slice(start, i).trim());
       start = i + 1;

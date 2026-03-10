@@ -65,7 +65,11 @@ export const undeclaredVarsRule: Rule = {
         // Skip known function names (e.g. used as callbacks or references)
         if (indexer.getFunction(name)) continue;
 
-        const resolved = indexer.resolveVariableAt(doc, doc.positionAt(absPos), name);
+        const resolved = indexer.resolveVariableAt(
+          doc,
+          doc.positionAt(absPos),
+          name,
+        );
         if (!resolved) {
           const pos = doc.positionAt(absPos);
           diags.push(
