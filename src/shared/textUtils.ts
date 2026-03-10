@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { CICODE_TYPES_PATTERN } from "./constants";
 
 export function isInCommentOrString(
   document: vscode.TextDocument,
@@ -14,8 +15,12 @@ export function isInCommentOrString(
   return posInSlice >= 0 && inSpan(posInSlice, spans);
 }
 
-export const TYPE_RE =
-  /^(INT|REAL|STRING|OBJECT|BOOL|BOOLEAN|LONG|ULONG|UNKNOWN|VOID)$/i;
+export const TYPE_RE = new RegExp(`^(${CICODE_TYPES_PATTERN}|UNKNOWN)$`, "i");
+
+/** Strip a Cicode inline comment (// ! |) and trailing whitespace from a line. */
+export function stripLineComment(line: string): string {
+  return line.replace(/\s*(\/\/|!|\|).*$/, "").trimEnd();
+}
 
 export function mergeSpans(
   spans: Array<[number, number]>,
@@ -273,12 +278,9 @@ export function cleanParamName(param?: string | null): string {
   p = p.replace(/[\[\]]/g, " ").trim();
   p = p.replace(/\s*=\s*[^,)]+$/, "").trim();
   p = p.replace(/^(GLOBAL|LOCAL|CONST|PUBLIC|PRIVATE)\s+/i, "");
+  p = p.replace(new RegExp(`^(${CICODE_TYPES_PATTERN}|UNKNOWN)\\s+`, "i"), "");
   p = p.replace(
-    /^(INT|REAL|STRING|OBJECT|BOOL|BOOLEAN|LONG|ULONG|UNKNOWN|VOID)\s+/i,
-    "",
-  );
-  p = p.replace(
-    /:\s*(INT|REAL|STRING|OBJECT|BOOL|BOOLEAN|LONG|ULONG|UNKNOWN|VOID)\b/i,
+    new RegExp(`:\\s*(${CICODE_TYPES_PATTERN}|UNKNOWN)\\b`, "i"),
     "",
   );
   p = p.replace(/:$/, "");
@@ -346,6 +348,7 @@ export function splitDeclNames(namesPart: string): DeclName[] {
 
   return parts
     .map((s) => s.trim())
+    .map((s) => stripLineComment(s).trim())
     .map((s) => s.replace(/\s*=\s*.+$/, "").trim())
     .filter(Boolean)
     .map((s) => {

@@ -163,6 +163,17 @@
           "default": true,
           "description": "Warn about variables that are declared but never used."
         },
+        "cicode.diagnostics.warnUndeclaredVariables": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn about variables that are used but never declared."
+        },
+        "cicode.diagnostics.ignoredUndeclaredVariables": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Regex patterns for variable names to exclude from the undeclared variable check (e.g. \"^My_\")."
+        },
         "cicode.lint.maxCallNestingDepth": {
           "type": "number",
           "default": 5,
@@ -186,7 +197,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Function names to exclude from undefined and argument count checks (case-insensitive)."
+          "description": "Regex patterns for function names to exclude from undefined and argument count checks (e.g. \"^My_\")."
         },
         "cicode.codeLens.enable": {
           "type": "boolean",

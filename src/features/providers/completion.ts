@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
 import { isInCommentOrString, leftWordRangeAt } from "../../shared/textUtils";
+import { CICODE_TYPES_PATTERN } from "../../shared/constants";
 import { formatScopeType } from "../../shared/utils";
 
 // ---------------------------------------------------------------------------
@@ -102,14 +103,13 @@ type CursorContext =
 
 // "declaration": after TYPE_KW + space + at least one identifier char being typed
 // e.g. "INT i", "REAL myV", "STRING s"
-const DECL_RE =
-  /\b(?:INT|REAL|STRING|OBJECT|BOOLEAN|VOID|LONG|ULONG|QUALITY|TIMESTAMP)\s+\w+$/i;
+const DECL_RE = new RegExp(`\\b(?:${CICODE_TYPES_PATTERN})\\s+\\w+$`, "i");
 
 // "funcdef": after FUNCTION keyword + space (+ optional chars being typed as function name)
 // e.g. "FUNCTION foo", "INT FUNCTION My"
 const FUNCDEF_RE = /\bFUNCTION\s+\w*$/i;
 
-const TYPE_KW_RE = /\b(?:INT|REAL|STRING|OBJECT|BOOLEAN|VOID|LONG|ULONG)\s*$/i;
+const TYPE_KW_RE = new RegExp(`\\b(?:${CICODE_TYPES_PATTERN})\\s*$`, "i");
 const EXPR_TAIL_RE = /[=+\-*/<>!&|^(,]\s*$/;
 const STATEMENT_RE = /^[\t ]*\w*$/; // only whitespace + possibly the word being typed
 

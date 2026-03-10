@@ -1,15 +1,18 @@
 import * as vscode from "vscode";
 import { debounce } from "../../shared/utils";
+import { CICODE_TYPES_PATTERN } from "../../shared/constants";
 import {
   TYPE_RE,
   splitDeclNames,
   buildIgnoreSpans,
   inSpan,
+  stripLineComment,
   extractLeadingTripleSlashDoc,
   extractSlashDoubleStarDoc,
   parseDocLines,
 } from "../../shared/textUtils";
 import { getBuiltins } from "../builtins/builtins";
+import { splitParamsTopLevel } from "../../shared/parseHelpers";
 import type { FunctionInfo, VariableEntry } from "../../shared/types";
 import type { FunctionRange } from "./types";
 
@@ -33,6 +36,8 @@ export class Indexer {
   private readonly _onIndexed = new vscode.EventEmitter<string | undefined>();
   /** Fires after indexing completes. Carries the file path for single-file reindex, undefined for full rebuild. */
   readonly onIndexed = this._onIndexed.event;
+
+  private _bulkIndexing = false;
 
   private readonly _debouncedIndex: (doc: vscode.TextDocument) => void;
 
@@ -82,6 +87,7 @@ export class Indexer {
     else if (typeof ex === "string" && ex.trim()) exclude = ex.trim();
 
     const files = await vscode.workspace.findFiles("**/*.ci", exclude);
+    this._bulkIndexing = true;
     for (const file of files) {
       try {
         const doc = await vscode.workspace.openTextDocument(file);
@@ -90,6 +96,7 @@ export class Indexer {
         console.error("index fail", file.fsPath, e);
       }
     }
+    this._bulkIndexing = false;
     this._onIndexed.fire(undefined);
   }
 
@@ -195,10 +202,7 @@ export class Indexer {
 
     for (const f of functions as any[]) {
       const key = f.name.toLowerCase();
-      const params = f.paramsRaw
-        .split(",")
-        .map((p: string) => p.trim())
-        .filter(Boolean);
+      const params = splitParamsTopLevel(f.paramsRaw).filter(Boolean);
 
       this.functionCache.set(key, {
         name: f.name,
@@ -234,7 +238,7 @@ export class Indexer {
     }
 
     this._indexVariablesInText(doc, text, functions);
-    this._onIndexed.fire(file);
+    if (!this._bulkIndexing) this._onIndexed.fire(file);
   }
 
   private _addVar(name: string, entry: VariableEntry) {
@@ -348,10 +352,10 @@ export class Indexer {
 
       // Check for type on same line: "INT FUNCTION foo()"
       const lastLine = beforeLines[beforeLines.length - 1] || "";
-      const sameLineMatch =
-        /\b(INT|REAL|STRING|OBJECT|BOOL|BOOLEAN|LONG|ULONG|VOID|QUALITY|TIMESTAMP)\s*$/i.exec(
-          lastLine,
-        );
+      const sameLineMatch = new RegExp(
+        `\\b(${CICODE_TYPES_PATTERN})\\s*$`,
+        "i",
+      ).exec(lastLine);
 
       if (sameLineMatch) {
         returnType = sameLineMatch[1].toUpperCase();
@@ -363,10 +367,7 @@ export class Indexer {
           i--
         ) {
           const raw = beforeLines[i];
-          const line = raw
-            .replace(/\/\/.*$/, "")
-            .replace(/!.*$/, "")
-            .trim();
+          const line = stripLineComment(raw).trim();
 
           if (!line) continue;
 
@@ -375,10 +376,10 @@ export class Indexer {
           if (line.endsWith(";")) break;
           if (/\b(END|IF|FOR|WHILE|SELECT)\b/i.test(line)) break;
 
-          const mType =
-            /^(?:(?:private|public|global|module|const|static)\s+)*(INT|REAL|STRING|OBJECT|BOOL|BOOLEAN|LONG|ULONG|VOID|QUALITY|TIMESTAMP)\s*$/i.exec(
-              line,
-            );
+          const mType = new RegExp(
+            `^(?:(?:private|public|global|module|const|static)\\s+)*(${CICODE_TYPES_PATTERN})\\s*$`,
+            "i",
+          ).exec(line);
           if (mType) {
             returnType = mType[1].toUpperCase();
             break;
@@ -518,9 +519,9 @@ export class Indexer {
       funcCtx: FunctionRange | null,
     ) => {
       const ignore = buildIgnoreSpans(sliceText);
-      // Use [ \t]+ (not \s+) between type and names to avoid matching across newlines
+      // Allow multi-line declarations: only continue when a line ends with a comma
       const declRe =
-        /^\s*(?:(GLOBAL|MODULE)[ \t]+)?(\w+)[ \t]+([^\r\n;]+)[ \t]*;?/gim;
+        /^\s*(?:(GLOBAL|MODULE)[ \t]+)?(\w+)[ \t]+((?:[^\r\n;]*,[ \t]*\r?\n[ \t]+)*[^\r\n;]+)[ \t]*;?/gim;
       let m: RegExpExecArray | null;
 
       while ((m = declRe.exec(sliceText))) {

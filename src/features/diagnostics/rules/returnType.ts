@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import type { Rule } from "../rule";
 import type { CheckContext } from "../context";
 import { diag } from "../diag";
-import { inSpan } from "../../../shared/textUtils";
+import { inSpan, stripLineComment } from "../../../shared/textUtils";
 import { CONTROL_KEYWORDS } from "../../../shared/constants";
 
 /**
@@ -46,10 +46,7 @@ export const returnTypeRule: Rule = {
 
         const lineEnd = body.indexOf("\n", m.index);
         const end = lineEnd === -1 ? body.length : lineEnd;
-        const after = body
-          .slice(m.index, end)
-          .replace(/\/\/.*$/, "")
-          .replace(/!.*$/, "")
+        const after = stripLineComment(body.slice(m.index, end))
           .replace(/\bRETURN\b/i, "")
           .replace(/;/g, "")
           .trim();

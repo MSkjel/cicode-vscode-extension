@@ -15,8 +15,8 @@ export interface CheckContext {
   ignoreNoHeaders: Array<[number, number]>;
   indexer: Indexer;
   cfg: LintConfig;
-  /** Pre-lowercased set of function names to skip in call checks */
-  ignoredFuncs: Set<string>;
+  /** Regex patterns for function names to skip in call checks */
+  ignoredFuncs: RegExp[];
   /** Value of cicode.diagnostics.enable */
   diagnosticsEnabled: boolean;
 }

@@ -30,7 +30,7 @@ export function registerDiagnostics(
         }),
         indexer,
         cfg: lintCfg,
-        ignoredFuncs: new Set(lintCfg.ignoredFunctions),
+        ignoredFuncs: lintCfg.ignoredFunctions,
         diagnosticsEnabled: cfg().get("cicode.diagnostics.enable", true),
       };
 

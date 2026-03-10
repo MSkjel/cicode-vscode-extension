@@ -4,6 +4,7 @@ import { functionDefsRule } from "./functionDefs";
 import { controlFlowRule } from "./controlFlow";
 import { returnTypeRule } from "./returnType";
 import { unusedVarsRule } from "./unusedVars";
+import { undeclaredVarsRule } from "./undeclaredVars";
 import { unreachableCodeRule } from "./unreachableCode";
 import {
   lineLengthRule,
@@ -28,6 +29,7 @@ export const ALL_RULES: Rule[] = [
 
   // Configurable checks
   unusedVarsRule,
+  undeclaredVarsRule,
 
   // Lint rules
   lineLengthRule,
