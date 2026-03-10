@@ -3,6 +3,7 @@ import type { Rule } from "../rule";
 import type { CheckContext } from "../context";
 import { diag } from "../diag";
 import { getOptionalParamFlags } from "../../../shared/utils";
+import { splitParamsTopLevel } from "../../../shared/parseHelpers";
 
 /**
  * Checks function definitions for:
@@ -54,10 +55,7 @@ export const functionDefsRule: Rule = {
       const header = indexer.getFunction(f.name);
       const params = header?.params?.length
         ? header.params
-        : (f.paramsRaw || "")
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean);
+        : splitParamsTopLevel(f.paramsRaw || "").filter(Boolean);
 
       if (params.length) {
         const optFlags = getOptionalParamFlags(params);

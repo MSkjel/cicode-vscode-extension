@@ -10,6 +10,7 @@ import {
   parseDocLines,
 } from "../../shared/textUtils";
 import { getBuiltins } from "../builtins/builtins";
+import { splitParamsTopLevel } from "../../shared/parseHelpers";
 import type { FunctionInfo, VariableEntry } from "../../shared/types";
 import type { FunctionRange } from "./types";
 
@@ -195,10 +196,7 @@ export class Indexer {
 
     for (const f of functions as any[]) {
       const key = f.name.toLowerCase();
-      const params = f.paramsRaw
-        .split(",")
-        .map((p: string) => p.trim())
-        .filter(Boolean);
+      const params = splitParamsTopLevel(f.paramsRaw).filter(Boolean);
 
       this.functionCache.set(key, {
         name: f.name,

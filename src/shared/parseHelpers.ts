@@ -270,3 +270,37 @@ export function sliceTopLevelArgSpans(
   pushTok(argsEndAbs);
   return out;
 }
+
+/**
+ * Splits a raw parameter string on top-level commas, ignoring commas inside
+ * string literals or nested parentheses. Use this instead of plain .split(",")
+ * when default values may contain commas (e.g. `sCol = "A,B,C"`).
+ */
+export function splitParamsTopLevel(raw: string): string[] {
+  const result: string[] = [];
+  let depth = 0;
+  let inDQ = false;
+  let inSQ = false;
+  let esc = false;
+  let start = 0;
+
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (esc) { esc = false; continue; }
+    if (ch === "^") { esc = true; continue; }
+    if (inDQ) { if (ch === '"') inDQ = false; continue; }
+    if (inSQ) { if (ch === "'") inSQ = false; continue; }
+    if (ch === '"') { inDQ = true; continue; }
+    if (ch === "'") { inSQ = true; continue; }
+    if (ch === "(") { depth++; continue; }
+    if (ch === ")") { depth--; continue; }
+    if (ch === "," && depth === 0) {
+      result.push(raw.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+
+  const last = raw.slice(start).trim();
+  if (last) result.push(last);
+  return result;
+}
