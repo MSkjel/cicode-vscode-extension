@@ -87,6 +87,7 @@ export const CICODE_TYPES = new Set([
   "VOID",
   "QUALITY",
   "TIMESTAMP",
+  "BOOLEAN",
 ]);
 
 /** Pipe-separated pattern of all valid Cicode types, for use in RegExp */

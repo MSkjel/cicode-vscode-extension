@@ -164,7 +164,7 @@
       "captures": { "1": { "name": "entity.name.function.call.cicode" } }
     },
     {
-      "match": "\\b(?i:(int|real|void|string|object|quality|timestamp))\\b",
+      "match": "\\b(?i:(int|real|void|string|object|quality|timestamp|boolean))\\b",
       "name": "storage.type.cicode"
     },
     {
