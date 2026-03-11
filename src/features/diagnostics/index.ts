@@ -41,6 +41,18 @@ export function registerDiagnostics(
     }
   }
 
+  async function runAll(): Promise<void> {
+    const files = await vscode.workspace.findFiles("**/*.ci");
+    for (const file of files) {
+      try {
+        const doc = await vscode.workspace.openTextDocument(file);
+        await run(doc);
+      } catch {
+        // skip unreadable files
+      }
+    }
+  }
+
   indexer.onIndexed(async (changedFile) => {
     indexingReady = true;
     if (changedFile) {
@@ -49,30 +61,18 @@ export function registerDiagnostics(
       );
       if (doc && isCicodeDocument(doc)) run(doc);
     } else {
-      const files = await vscode.workspace.findFiles("**/*.ci");
-      for (const file of files) {
-        try {
-          const doc = await vscode.workspace.openTextDocument(file);
-          await run(doc);
-        } catch {
-          // skip unreadable files
-        }
-      }
+      await runAll();
     }
   });
 
-  const subs: vscode.Disposable[] = [
-    vscode.workspace.onDidOpenTextDocument(run),
-    vscode.workspace.onDidSaveTextDocument(run),
-    vscode.window.onDidChangeActiveTextEditor((editor) => {
-      if (editor) run(editor.document);
-    }),
-  ];
+  const cfgSub = vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration("cicode") && indexingReady) runAll();
+  });
 
   return {
     dispose: () => {
       coll.dispose();
-      subs.forEach((s) => s.dispose());
+      cfgSub.dispose();
     },
     set: coll.set.bind(coll),
     delete: coll.delete.bind(coll),
