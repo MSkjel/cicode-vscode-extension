@@ -66,6 +66,13 @@ export function makeNavProviders(
           return new vscode.Hover(new vscode.MarkdownString(md));
         }
 
+        const label = indexer.getLabel(w);
+        if (label) {
+          let md = "```cicode\n" + `${label.name} = ${label.expr}` + "\n```";
+          if (label.comment) md += `\n\n${label.comment}`;
+          return new vscode.Hover(new vscode.MarkdownString(md));
+        }
+
         return null;
       },
     }),

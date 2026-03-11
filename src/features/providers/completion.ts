@@ -332,6 +332,23 @@ export function makeCompletion(
           pushVar(v);
       }
 
+      // Label constants from labels.DBF
+      if (ctx !== "type" && ctx !== "declaration") {
+        for (const [, label] of indexer.getAllLabels()) {
+          const it = new vscode.CompletionItem(
+            label.name,
+            vscode.CompletionItemKind.Constant,
+          );
+          it.detail = label.expr || undefined;
+          it.sortText = `1_${label.name}`;
+          if (label.comment) {
+            it.documentation = new vscode.MarkdownString(label.comment);
+          }
+          if (wr) it.range = wr;
+          items.push(it);
+        }
+      }
+
       return items;
     },
   };

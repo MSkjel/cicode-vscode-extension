@@ -147,11 +147,11 @@
       ]
     },
     {
-      "match": "\\b(?i:(if|while|for|then|else|do|to|return|select|case))\\b",
+      "match": "\\b(?i:(if|while|for|then|else|do|to|is|return|select|case))\\b",
       "name": "keyword.control.cicode"
     },
     {
-      "match": "\\b(?i:(and|or|not|mod|bitand|bitor))\\b",
+      "match": "\\b(?i:(and|or|not|mod|bitand|bitor|bitxor))\\b",
       "name": "keyword.operator.cicode"
     },
     {

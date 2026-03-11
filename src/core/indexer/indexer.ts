@@ -15,6 +15,7 @@ import { getBuiltins } from "../builtins/builtins";
 import { splitParamsTopLevel } from "../../shared/parseHelpers";
 import type { FunctionInfo, VariableEntry } from "../../shared/types";
 import type { FunctionRange } from "./types";
+import { parseLabelsDbf, type LabelRecord } from "./labelsReader";
 
 /**
  * Indexes Cicode files to extract function definitions, variable declarations,
@@ -23,6 +24,7 @@ import type { FunctionRange } from "./types";
 export class Indexer {
   private readonly functionCache = new Map<string, FunctionInfo>();
   readonly variableCache = new Map<string, VariableEntry[]>();
+  readonly labelCache = new Map<string, LabelRecord>(); // label name (lower) → record
   private readonly functionRangesByFile = new Map<string, FunctionRange[]>();
   private readonly _ignoreSpansByFile = new Map<
     string,
@@ -40,14 +42,24 @@ export class Indexer {
   private _bulkIndexing = false;
 
   private readonly _debouncedIndex: (doc: vscode.TextDocument) => void;
+  private readonly _debouncedReindexLabels: (filePath: string) => void;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly cfg: () => vscode.WorkspaceConfiguration,
   ) {
     this._debouncedIndex = debounce((doc) => this._indexFile(doc), 300);
+    this._debouncedReindexLabels = debounce(
+      (p: string) => this._reindexLabelsFile(p),
+      500,
+    );
 
+    const dbfWatcher =
+      vscode.workspace.createFileSystemWatcher("**/labels.DBF");
     context.subscriptions.push(
+      dbfWatcher,
+      dbfWatcher.onDidChange((uri) => this._debouncedReindexLabels(uri.fsPath)),
+      dbfWatcher.onDidCreate((uri) => this._debouncedReindexLabels(uri.fsPath)),
       vscode.workspace.onDidSaveTextDocument((d) => this._maybeIndex(d)),
       vscode.workspace.onDidOpenTextDocument((d) => this._maybeIndex(d)),
       vscode.workspace.onDidChangeTextDocument((e) =>
@@ -69,6 +81,7 @@ export class Indexer {
     this.functionCache.clear();
     this.variableCache.clear();
     this.functionRangesByFile.clear();
+    this.labelCache.clear();
 
     // Load builtin functions first
     for (const [k, v] of getBuiltins()) {
@@ -97,6 +110,69 @@ export class Indexer {
       }
     }
     this._bulkIndexing = false;
+
+    // Index labels from all labels.DBF files in the workspace
+    const labelFiles = await vscode.workspace.findFiles(
+      "**/labels.DBF",
+      exclude,
+    );
+    for (const file of labelFiles) {
+      this._indexLabels(file.fsPath);
+    }
+
+    this._onIndexed.fire(undefined);
+  }
+
+  private _indexLabels(filePath: string): void {
+    const records = parseLabelsDbf(filePath);
+    for (const rec of records) {
+      const parenIdx = rec.name.indexOf("(");
+      if (parenIdx !== -1) {
+        // Function-like macro: index into functionCache
+        const funcName = rec.name.slice(0, parenIdx).trim();
+        const paramStr = rec.name.slice(
+          parenIdx + 1,
+          rec.name.lastIndexOf(")"),
+        );
+        const params = paramStr
+          ? paramStr
+              .split(",")
+              .map((p) => p.trim())
+              .filter(Boolean)
+          : [];
+        const key = funcName.toLowerCase();
+        if (!this.functionCache.has(key)) {
+          this.functionCache.set(key, {
+            name: funcName,
+            returnType: "",
+            params,
+            file: filePath,
+            location: null,
+            bodyRange: null,
+            doc: rec.comment || undefined,
+          });
+        }
+      } else {
+        // Constant: index into labelCache
+        const key = rec.name.trim().toLowerCase();
+        if (key && !this.labelCache.has(key)) {
+          this.labelCache.set(key, rec);
+        }
+      }
+    }
+  }
+
+  private _reindexLabelsFile(filePath: string): void {
+    // Purge function entries and label entries sourced from this specific file
+    for (const [key, f] of this.functionCache) {
+      if (f.file === filePath) this.functionCache.delete(key);
+    }
+    for (const [key, label] of this.labelCache) {
+      if (label.file === filePath) this.labelCache.delete(key);
+    }
+
+    // Re-index
+    this._indexLabels(filePath);
     this._onIndexed.fire(undefined);
   }
 
@@ -727,6 +803,18 @@ export class Indexer {
     if (glob) return glob;
 
     return candidates[0] || null;
+  }
+
+  isKnownLabel(name: string): boolean {
+    return this.labelCache.has(name.toLowerCase());
+  }
+
+  getLabel(name: string): LabelRecord | undefined {
+    return this.labelCache.get(name.toLowerCase());
+  }
+
+  getAllLabels(): Map<string, LabelRecord> {
+    return this.labelCache;
   }
 
   /** Find the function containing a given position (includes header and body) */

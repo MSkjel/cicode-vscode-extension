@@ -92,6 +92,11 @@
         "when": "editorLangId == cicode && editorTextFocus"
       }
     ],
+    "configurationDefaults": {
+      "[cicode]": {
+        "files.encoding": "windows1252"
+      }
+    },
     "configuration": {
       "title": "Cicode",
       "properties": {
@@ -139,7 +144,7 @@
         },
         "cicode.lint.maxLineLength": {
           "type": "number",
-          "default": 140,
+          "default": 160,
           "minimum": 0,
           "description": "Warn when lines exceed this length (0 = disable)."
         },
@@ -184,7 +189,7 @@
         },
         "cicode.lint.maxBlockNestingDepth": {
           "type": "number",
-          "default": 4,
+          "default": 6,
           "minimum": 0,
           "description": "Warn when control flow blocks (IF/FOR/WHILE/etc.) are nested deeper than this level (0 = disable)."
         },

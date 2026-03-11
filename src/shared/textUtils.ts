@@ -131,22 +131,11 @@ function scanCommentAndStringSpans(text: string): Array<[number, number]> {
     }
 
     if (ch === "!") {
-      let isFirstNonWs = true;
-      for (let k = lineStart; k < i; k++) {
-        const c = text[k];
-        if (c !== " " && c !== "\t" && c !== "\r") {
-          isFirstNonWs = false;
-          break;
-        }
-      }
-      const prev = i > 0 ? text[i - 1] : "\n";
-      if (isFirstNonWs || isWsOrPunct(prev)) {
-        const start = i;
-        const nl = text.indexOf("\n", i);
-        i = nl === -1 ? N : nl;
-        push(start, i);
-        continue;
-      }
+      const start = i;
+      const nl = text.indexOf("\n", i);
+      i = nl === -1 ? N : nl;
+      push(start, i);
+      continue;
     }
 
     i++;

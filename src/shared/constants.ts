@@ -14,6 +14,7 @@ export const KEYWORDS_WITH_PAREN = new Set([
   "AND",
   "NOT",
   "OR",
+  "IS",
 ]);
 
 /** Keywords that indicate control flow (not return values) */
@@ -54,6 +55,7 @@ export const STRUCTURAL_KEYWORDS = new Set([
   "ELSE",
   "CASE",
   "TO",
+  "IS",
 ]);
 
 /** Keywords that indicate statement boundaries */
@@ -73,6 +75,7 @@ export const MISC_KEYWORDS = new Set([
   "MOD",
   "BITAND",
   "BITOR",
+  "BITXOR",
   // Literals
   "TRUE",
   "FALSE",

@@ -65,6 +65,9 @@ export const undeclaredVarsRule: Rule = {
         // Skip known function names (e.g. used as callbacks or references)
         if (indexer.getFunction(name)) continue;
 
+        // Skip known label constants from labels.DBF
+        if (indexer.isKnownLabel(name)) continue;
+
         const resolved = indexer.resolveVariableAt(
           doc,
           doc.positionAt(absPos),
