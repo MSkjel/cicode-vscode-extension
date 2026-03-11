@@ -41,7 +41,7 @@ export function registerDiagnostics(
     }
   }
 
-  indexer.onIndexed((changedFile) => {
+  indexer.onIndexed(async (changedFile) => {
     indexingReady = true;
     if (changedFile) {
       const doc = vscode.workspace.textDocuments.find(
@@ -49,8 +49,14 @@ export function registerDiagnostics(
       );
       if (doc && isCicodeDocument(doc)) run(doc);
     } else {
-      for (const doc of vscode.workspace.textDocuments) {
-        if (isCicodeDocument(doc)) run(doc);
+      const files = await vscode.workspace.findFiles("**/*.ci");
+      for (const file of files) {
+        try {
+          const doc = await vscode.workspace.openTextDocument(file);
+          await run(doc);
+        } catch {
+          // skip unreadable files
+        }
       }
     }
   });
