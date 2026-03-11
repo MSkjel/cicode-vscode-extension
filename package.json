@@ -92,6 +92,11 @@
         "when": "editorLangId == cicode && editorTextFocus"
       }
     ],
+    "configurationDefaults": {
+      "[cicode]": {
+        "files.encoding": "windows1252"
+      }
+    },
     "configuration": {
       "title": "Cicode",
       "properties": {
