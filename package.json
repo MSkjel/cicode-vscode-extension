@@ -168,7 +168,7 @@
         },
         "cicode.diagnostics.warnUndeclaredVariables": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Warn about variables that are used but never declared."
         },
         "cicode.diagnostics.ignoredUndeclaredVariables": {
