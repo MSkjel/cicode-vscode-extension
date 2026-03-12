@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
 import { buildIgnoreSpans } from "../../shared/textUtils";
-import { getLintConfig, getExcludeGlob } from "../../config";
+import { getLintConfig, findWorkspaceFiles } from "../../config";
 import { isCicodeDocument } from "../../shared/utils";
 import type { CheckContext } from "./context";
 import { ALL_RULES } from "./rules/index";
@@ -42,7 +42,7 @@ export function registerDiagnostics(
   }
 
   async function runAll(): Promise<void> {
-    const files = await vscode.workspace.findFiles("**/*.ci", getExcludeGlob(cfg));
+    const files = await findWorkspaceFiles("**/*.ci", cfg);
     for (const file of files) {
       try {
         const doc = await vscode.workspace.openTextDocument(file);

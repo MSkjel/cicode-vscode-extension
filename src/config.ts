@@ -2,15 +2,27 @@ import * as vscode from "vscode";
 
 export const cfg = () => vscode.workspace.getConfiguration();
 
-/** Returns the exclude glob for findFiles, or null if none configured (bypasses files.exclude). */
-export function getExcludeGlob(
+/**
+ * Find workspace files matching a pattern.
+ * Always bypasses files.exclude (passes null), then filters against
+ * cicode.indexing.excludePatterns so only our own setting controls exclusions.
+ */
+export async function findWorkspaceFiles(
+  include: string,
   cfg: () => vscode.WorkspaceConfiguration,
-): string | null {
-  const ex = cfg().get("cicode.indexing.excludeGlobs");
-  if (Array.isArray(ex) && ex.length) return `{${ex.join(",")}}`;
-  if (typeof ex === "string" && (ex as string).trim())
-    return (ex as string).trim();
-  return null;
+): Promise<vscode.Uri[]> {
+  const all = await vscode.workspace.findFiles(include, null);
+
+  const patterns = cfg().get<string[]>("cicode.indexing.excludePatterns", []);
+  if (!patterns.length) return all;
+
+  const regexes = patterns.filter(Boolean).map((p) => new RegExp(p, "i"));
+  return all.filter((uri) => {
+    const rel = vscode.workspace
+      .asRelativePath(uri, false)
+      .replace(/\\/g, "/");
+    return !regexes.some((re) => re.test(rel));
+  });
 }
 
 export interface LintConfig {

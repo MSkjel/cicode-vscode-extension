@@ -16,7 +16,7 @@ import { splitParamsTopLevel } from "../../shared/parseHelpers";
 import type { FunctionInfo, VariableEntry } from "../../shared/types";
 import type { FunctionRange } from "./types";
 import { parseLabelsDbf, type LabelRecord } from "./labelsReader";
-import { getExcludeGlob } from "../../config";
+import { findWorkspaceFiles } from "../../config";
 
 /**
  * Indexes Cicode files to extract function definitions, variable declarations,
@@ -95,8 +95,7 @@ export class Indexer {
     }
 
     // Find and index all .ci files
-    const exclude = getExcludeGlob(this.cfg);
-    const files = await vscode.workspace.findFiles("**/*.ci", exclude);
+    const files = await findWorkspaceFiles("**/*.ci", this.cfg);
     this._bulkIndexing = true;
     for (const file of files) {
       try {
@@ -109,10 +108,7 @@ export class Indexer {
     this._bulkIndexing = false;
 
     // Index labels from all labels.DBF files in the workspace
-    const labelFiles = await vscode.workspace.findFiles(
-      "**/labels.DBF",
-      exclude,
-    );
+    const labelFiles = await findWorkspaceFiles("**/labels.DBF", this.cfg);
     for (const file of labelFiles) {
       this._indexLabels(file.fsPath);
     }

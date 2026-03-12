@@ -9,7 +9,7 @@ import {
 import { countArgsTopLevel } from "../../shared/parseHelpers";
 import { KEYWORDS_WITH_PAREN } from "../../shared/constants";
 import { escapeRegExp, formatScopeType } from "../../shared/utils";
-import { getExcludeGlob } from "../../config";
+import { findWorkspaceFiles } from "../../config";
 
 export function makeNavProviders(
   indexer: Indexer,
@@ -187,7 +187,7 @@ export function makeNavProviders(
         async function liveScanAllFiles(
           target: string,
         ): Promise<vscode.Location[]> {
-          const files = await vscode.workspace.findFiles("**/*.ci", getExcludeGlob(cfg));
+          const files = await findWorkspaceFiles("**/*.ci", cfg);
           const results: vscode.Location[] = [];
           for (const f of files) {
             results.push(...(await liveScan(f, target)));

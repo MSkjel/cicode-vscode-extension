@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import type { Indexer } from "./indexer/indexer";
 import { buildIgnoreSpans, inSpan } from "../shared/textUtils";
 import { debounce } from "../shared/utils";
-import { getExcludeGlob } from "../config";
+import { findWorkspaceFiles } from "../config";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -175,7 +175,7 @@ export class ReferenceCache implements vscode.Disposable {
     const functionNames = this._collectFunctionNames();
     this._knownFunctions = new Set(functionNames);
 
-    const files = await vscode.workspace.findFiles("**/*.ci", getExcludeGlob(this.cfg));
+    const files = await findWorkspaceFiles("**/*.ci", this.cfg);
 
     const BATCH_SIZE = 10;
     for (let i = 0; i < files.length; i += BATCH_SIZE) {
@@ -247,7 +247,7 @@ export class ReferenceCache implements vscode.Disposable {
     // For newly added function names, scan ALL files
     if (newSymbols.length > 0) {
       const newSet = new Set(newSymbols);
-      const allFiles = await vscode.workspace.findFiles("**/*.ci", getExcludeGlob(this.cfg));
+      const allFiles = await findWorkspaceFiles("**/*.ci", this.cfg);
       for (const uri of allFiles) {
         if (this._buildVersion !== version) return;
         if (uri.fsPath === changedFile) continue;
