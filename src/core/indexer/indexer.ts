@@ -16,6 +16,7 @@ import { splitParamsTopLevel } from "../../shared/parseHelpers";
 import type { FunctionInfo, VariableEntry } from "../../shared/types";
 import type { FunctionRange } from "./types";
 import { parseLabelsDbf, type LabelRecord } from "./labelsReader";
+import { getExcludeGlob } from "../../config";
 
 /**
  * Indexes Cicode files to extract function definitions, variable declarations,
@@ -94,11 +95,7 @@ export class Indexer {
     }
 
     // Find and index all .ci files
-    const ex = this.cfg().get("cicode.indexing.excludeGlobs");
-    let exclude: string | undefined;
-    if (Array.isArray(ex) && ex.length) exclude = `{${ex.join(",")}}`;
-    else if (typeof ex === "string" && ex.trim()) exclude = ex.trim();
-
+    const exclude = getExcludeGlob(this.cfg);
     const files = await vscode.workspace.findFiles("**/*.ci", exclude);
     this._bulkIndexing = true;
     for (const file of files) {

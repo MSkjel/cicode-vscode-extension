@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { Indexer } from "./indexer/indexer";
 import { buildIgnoreSpans, inSpan } from "../shared/textUtils";
 import { debounce } from "../shared/utils";
+import { getExcludeGlob } from "../config";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -174,8 +175,7 @@ export class ReferenceCache implements vscode.Disposable {
     const functionNames = this._collectFunctionNames();
     this._knownFunctions = new Set(functionNames);
 
-    const exclude = this._getExcludeGlob();
-    const files = await vscode.workspace.findFiles("**/*.ci", exclude);
+    const files = await vscode.workspace.findFiles("**/*.ci", getExcludeGlob(this.cfg));
 
     const BATCH_SIZE = 10;
     for (let i = 0; i < files.length; i += BATCH_SIZE) {
@@ -247,8 +247,7 @@ export class ReferenceCache implements vscode.Disposable {
     // For newly added function names, scan ALL files
     if (newSymbols.length > 0) {
       const newSet = new Set(newSymbols);
-      const exclude = this._getExcludeGlob();
-      const allFiles = await vscode.workspace.findFiles("**/*.ci", exclude);
+      const allFiles = await vscode.workspace.findFiles("**/*.ci", getExcludeGlob(this.cfg));
       for (const uri of allFiles) {
         if (this._buildVersion !== version) return;
         if (uri.fsPath === changedFile) continue;
@@ -389,12 +388,4 @@ export class ReferenceCache implements vscode.Disposable {
     return names;
   }
 
-  /** Read the exclude glob from configuration. */
-  private _getExcludeGlob(): string | undefined {
-    const ex = this.cfg().get("cicode.indexing.excludeGlobs");
-    if (Array.isArray(ex) && ex.length) return `{${ex.join(",")}}`;
-    if (typeof ex === "string" && (ex as string).trim())
-      return (ex as string).trim();
-    return undefined;
-  }
 }

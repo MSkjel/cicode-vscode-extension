@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
-import type { LintConfig } from "../../shared/diagnosticHelpers";
+import type { LintConfig } from "../../config";
 
 /**
  * All inputs a diagnostic rule needs to run.
