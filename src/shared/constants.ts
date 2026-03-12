@@ -15,6 +15,10 @@ export const KEYWORDS_WITH_PAREN = new Set([
   "NOT",
   "OR",
   "IS",
+  "MOD",
+  "BITAND",
+  "BITOR",
+  "BITXOR",
 ]);
 
 /** Keywords that indicate control flow (not return values) */
