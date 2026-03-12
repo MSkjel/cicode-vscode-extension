@@ -387,5 +387,4 @@ export class ReferenceCache implements vscode.Disposable {
     }
     return names;
   }
-
 }

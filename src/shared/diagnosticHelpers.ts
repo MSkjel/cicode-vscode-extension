@@ -169,4 +169,3 @@ export class DiagnosticCollector {
     return this.diagnostics.length;
   }
 }
-

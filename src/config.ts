@@ -18,9 +18,7 @@ export async function findWorkspaceFiles(
 
   const regexes = patterns.filter(Boolean).map((p) => new RegExp(p, "i"));
   return all.filter((uri) => {
-    const rel = vscode.workspace
-      .asRelativePath(uri, false)
-      .replace(/\\/g, "/");
+    const rel = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
     return !regexes.some((re) => re.test(rel));
   });
 }
