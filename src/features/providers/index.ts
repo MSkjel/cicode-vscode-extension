@@ -54,7 +54,7 @@ export function registerProviders(
         makeSymbols(indexer, true),
       ),
     );
-    disposables.push(...makeNavProviders(indexer, refCache));
+    disposables.push(...makeNavProviders(indexer, refCache, cfg));
     disposables.push(
       vscode.languages.registerCompletionItemProvider(
         lang,

@@ -100,15 +100,13 @@
     "configuration": {
       "title": "Cicode",
       "properties": {
-        "cicode.indexing.excludeGlobs": {
+        "cicode.indexing.excludePatterns": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": [
-            "**/node_modules/**"
-          ],
-          "description": "Glob patterns to exclude from indexing."
+          "default": [],
+          "description": "Regular expressions matched against workspace-relative file paths to exclude from indexing."
         },
         "cicode.avevaPath": {
           "type": "string",
@@ -170,7 +168,7 @@
         },
         "cicode.diagnostics.warnUndeclaredVariables": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Warn about variables that are used but never declared."
         },
         "cicode.diagnostics.ignoredUndeclaredVariables": {

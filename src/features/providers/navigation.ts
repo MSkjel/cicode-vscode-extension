@@ -9,10 +9,12 @@ import {
 import { countArgsTopLevel } from "../../shared/parseHelpers";
 import { KEYWORDS_WITH_PAREN } from "../../shared/constants";
 import { escapeRegExp, formatScopeType } from "../../shared/utils";
+import { findWorkspaceFiles } from "../../config";
 
 export function makeNavProviders(
   indexer: Indexer,
   refCache: ReferenceCache,
+  cfg: () => vscode.WorkspaceConfiguration,
 ): vscode.Disposable[] {
   const lang = { language: "cicode" } as const;
 
@@ -185,7 +187,7 @@ export function makeNavProviders(
         async function liveScanAllFiles(
           target: string,
         ): Promise<vscode.Location[]> {
-          const files = await vscode.workspace.findFiles("**/*.ci");
+          const files = await findWorkspaceFiles("**/*.ci", cfg);
           const results: vscode.Location[] = [];
           for (const f of files) {
             results.push(...(await liveScan(f, target)));
