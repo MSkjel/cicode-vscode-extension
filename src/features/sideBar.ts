@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import * as fs from "fs";
+import { findWorkspaceFiles, cfg } from "../config";
 
 export function makeSideBar() {
   const disposables: vscode.Disposable[] = [];
@@ -46,7 +46,12 @@ class CicodeExplorerProvider
   >();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
+  private ciDirs: Set<string> | null = null;
+  private ciFiles: Set<string> | null = null;
+
   refresh() {
+    this.ciDirs = null;
+    this.ciFiles = null;
     this._onDidChangeTreeData.fire();
   }
 
@@ -54,48 +59,86 @@ class CicodeExplorerProvider
     return element;
   }
 
-  getChildren(element?: CicodeExplorerItem): Thenable<CicodeExplorerItem[]> {
-    if (!vscode.workspace.workspaceFolders) {
-      return Promise.resolve([]);
-    }
+  async getChildren(
+    element?: CicodeExplorerItem,
+  ): Promise<CicodeExplorerItem[]> {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders) return [];
+
+    const ciDirs = await this.getCiDirs();
 
     if (!element) {
-      const rootPath = vscode.workspace.workspaceFolders[0].uri.fsPath;
-      return Promise.resolve(this.readDirectory(rootPath));
+      if (folders.length === 1) {
+        return this.readDirectory(folders[0].uri.fsPath, ciDirs);
+      }
+      const folderState = cfg().get("cicode.explorer.expandFolders", true)
+        ? vscode.TreeItemCollapsibleState.Expanded
+        : vscode.TreeItemCollapsibleState.Collapsed;
+      return folders
+        .filter((f) => ciDirs.has(f.uri.fsPath))
+        .map((f) => new CicodeExplorerItem(f.name, folderState, f.uri, false));
     }
 
     if (element.resourceUri) {
-      return Promise.resolve(this.readDirectory(element.resourceUri.fsPath));
+      return this.readDirectory(element.resourceUri.fsPath, ciDirs);
     }
 
-    return Promise.resolve([]);
+    return [];
   }
 
-  private readDirectory(dirPath: string): CicodeExplorerItem[] {
-    try {
-      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-      const sorted = entries
-        .filter((e) => e.isDirectory() || e.name.endsWith(".ci"))
-        .sort((a, b) => {
-          if (a.isDirectory() && !b.isDirectory()) return -1;
-          if (!a.isDirectory() && b.isDirectory()) return 1;
-          return a.name.localeCompare(b.name);
-        });
+  private async getCiDirs(): Promise<Set<string>> {
+    if (this.ciDirs) return this.ciDirs;
 
-      return sorted.map((e) => {
-        const fullPath = path.join(dirPath, e.name);
-        return new CicodeExplorerItem(
-          e.name,
-          e.isDirectory()
-            ? vscode.TreeItemCollapsibleState.Expanded
-            : vscode.TreeItemCollapsibleState.None,
-          vscode.Uri.file(fullPath),
-          !e.isDirectory(),
-        );
-      });
-    } catch (err) {
-      console.error(`Cicode: Failed to read directory ${dirPath}:`, err);
-      return [];
+    const uris = await findWorkspaceFiles("**/*.ci", cfg);
+    const dirs = new Set<string>();
+    const files = new Set<string>();
+    for (const uri of uris) {
+      files.add(uri.fsPath);
+      let dir = path.dirname(uri.fsPath);
+      while (!dirs.has(dir)) {
+        dirs.add(dir);
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
     }
+    this.ciDirs = dirs;
+    this.ciFiles = files;
+    return dirs;
+  }
+
+  private readDirectory(
+    dirPath: string,
+    ciDirs: Set<string>,
+  ): CicodeExplorerItem[] {
+    const children = new Map<string, boolean>(); // fullPath -> isDirectory
+
+    for (const filePath of this.ciFiles!) {
+      const parent = path.dirname(filePath);
+      if (parent === dirPath) children.set(filePath, false);
+    }
+    for (const dir of ciDirs) {
+      if (path.dirname(dir) === dirPath) children.set(dir, true);
+    }
+
+    return [...children.entries()]
+      .sort(([aPath, aIsDir], [bPath, bIsDir]) => {
+        if (aIsDir && !bIsDir) return -1;
+        if (!aIsDir && bIsDir) return 1;
+        return path.basename(aPath).localeCompare(path.basename(bPath));
+      })
+      .map(
+        ([fullPath, isDir]) =>
+          new CicodeExplorerItem(
+            path.basename(fullPath),
+            isDir
+              ? cfg().get("cicode.explorer.expandFolders", true)
+                ? vscode.TreeItemCollapsibleState.Expanded
+                : vscode.TreeItemCollapsibleState.Collapsed
+              : vscode.TreeItemCollapsibleState.None,
+            vscode.Uri.file(fullPath),
+            !isDir,
+          ),
+      );
   }
 }
