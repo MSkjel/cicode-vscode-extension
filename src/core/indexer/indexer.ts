@@ -16,6 +16,7 @@ import { splitParamsTopLevel } from "../../shared/parseHelpers";
 import type { FunctionInfo, VariableEntry } from "../../shared/types";
 import type { FunctionRange } from "./types";
 import { parseLabelsDbf, type LabelRecord } from "./labelsReader";
+import { parseLocvarDbf } from "./localVarsParser";
 import { findWorkspaceFiles } from "../../config";
 
 /**
@@ -44,9 +45,10 @@ export class Indexer {
 
   private readonly _debouncedIndex: (doc: vscode.TextDocument) => void;
   private readonly _debouncedReindexLabels: (filePath: string) => void;
+  private readonly _debouncedReindexLocvar: (filePath: string) => void;
 
   constructor(
-    private readonly context: vscode.ExtensionContext,
+    context: vscode.ExtensionContext,
     private readonly cfg: () => vscode.WorkspaceConfiguration,
   ) {
     this._debouncedIndex = debounce((doc) => this._indexFile(doc), 300);
@@ -54,13 +56,30 @@ export class Indexer {
       (p: string) => this._reindexLabelsFile(p),
       500,
     );
+    this._debouncedReindexLocvar = debounce(
+      (p: string) => this._reindexLocvarFile(p),
+      500,
+    );
 
-    const dbfWatcher =
+    const labelsWatcher =
       vscode.workspace.createFileSystemWatcher("**/labels.DBF");
+    const locvarWatcher =
+      vscode.workspace.createFileSystemWatcher("**/locvar.DBF");
     context.subscriptions.push(
-      dbfWatcher,
-      dbfWatcher.onDidChange((uri) => this._debouncedReindexLabels(uri.fsPath)),
-      dbfWatcher.onDidCreate((uri) => this._debouncedReindexLabels(uri.fsPath)),
+      labelsWatcher,
+      labelsWatcher.onDidChange((uri) =>
+        this._debouncedReindexLabels(uri.fsPath),
+      ),
+      labelsWatcher.onDidCreate((uri) =>
+        this._debouncedReindexLabels(uri.fsPath),
+      ),
+      locvarWatcher,
+      locvarWatcher.onDidChange((uri) =>
+        this._debouncedReindexLocvar(uri.fsPath),
+      ),
+      locvarWatcher.onDidCreate((uri) =>
+        this._debouncedReindexLocvar(uri.fsPath),
+      ),
       vscode.workspace.onDidSaveTextDocument((d) => this._maybeIndex(d)),
       vscode.workspace.onDidOpenTextDocument((d) => this._maybeIndex(d)),
       vscode.workspace.onDidChangeTextDocument((e) =>
@@ -113,6 +132,12 @@ export class Indexer {
       this._indexLabels(file.fsPath);
     }
 
+    // Index variables from all locvar.DBF files in the workspace
+    const locvarFiles = await findWorkspaceFiles("**/locvar.DBF", this.cfg);
+    for (const file of locvarFiles) {
+      this._indexLocvar(file.fsPath);
+    }
+
     this._onIndexed.fire(undefined);
   }
 
@@ -142,6 +167,7 @@ export class Indexer {
             file: filePath,
             location: null,
             bodyRange: null,
+            expr: rec.expr || undefined,
             doc: rec.comment || undefined,
           });
         }
@@ -153,6 +179,46 @@ export class Indexer {
         }
       }
     }
+  }
+
+  private _indexLocvar(filePath: string): void {
+    const records = parseLocvarDbf(filePath);
+    for (const rec of records) {
+      const key = rec.name.toLowerCase();
+      if (!this._variableKeysByFile.has(filePath)) {
+        this._variableKeysByFile.set(filePath, new Set());
+      }
+      this._variableKeysByFile.get(filePath)!.add(key);
+      if (!this.variableCache.has(key)) this.variableCache.set(key, []);
+      this.variableCache.get(key)!.push({
+        name: rec.name,
+        type: rec.type || "UNKNOWN",
+        scopeType: "global",
+        scopeId: "global",
+        location: null,
+        file: filePath,
+        range: null,
+        isParam: false,
+        doc: rec.comment || undefined,
+      });
+    }
+  }
+
+  private _reindexLocvarFile(filePath: string): void {
+    const keys = this._variableKeysByFile.get(filePath);
+    if (keys) {
+      for (const key of keys) {
+        const arr = this.variableCache.get(key);
+        if (arr) {
+          const filtered = arr.filter((e) => e.file !== filePath);
+          if (filtered.length) this.variableCache.set(key, filtered);
+          else this.variableCache.delete(key);
+        }
+      }
+      this._variableKeysByFile.delete(filePath);
+    }
+    this._indexLocvar(filePath);
+    this._onIndexed.fire(undefined);
   }
 
   private _reindexLabelsFile(filePath: string): void {

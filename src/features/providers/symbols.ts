@@ -47,14 +47,16 @@ export function makeSymbols(indexer: Indexer, workspace = false) {
               : v.scopeType === "module"
                 ? "Module"
                 : `Local (${v.scopeId})`;
-          out.push(
-            new vscode.SymbolInformation(
-              v.name,
-              vscode.SymbolKind.Variable,
-              detail,
-              v.location,
-            ),
-          );
+          if (v.location) {
+            out.push(
+              new vscode.SymbolInformation(
+                v.name,
+                vscode.SymbolKind.Variable,
+                detail,
+                v.location,
+              ),
+            );
+          }
         }
         return out;
       },
@@ -90,7 +92,7 @@ export function makeSymbols(indexer: Indexer, workspace = false) {
       }
 
       for (const v of indexer.getVariablesInFile(document.uri.fsPath)) {
-        if (v.scopeType !== "local") {
+        if (v.scopeType !== "local" && v.location) {
           syms.push(
             new vscode.DocumentSymbol(
               `${v.name}: ${v.type}`,
