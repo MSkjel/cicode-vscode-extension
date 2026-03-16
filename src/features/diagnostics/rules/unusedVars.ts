@@ -62,7 +62,7 @@ export const unusedVarsRule: Rule = {
         const count = counts.get(key) || 0;
         for (const v of vars) {
           const threshold = v.isParam ? 0 : 1;
-          if (count <= threshold) {
+          if (count <= threshold && v.location) {
             diags.push(
               hint(
                 v.location.range,

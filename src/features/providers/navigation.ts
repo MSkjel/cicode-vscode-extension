@@ -41,6 +41,7 @@ export function makeNavProviders(
         if (entry) {
           const sig = `${entry.returnType} ${entry.name}(${(entry.params || []).join(", ")})`;
           let md = "```cicode\n" + sig + "\n```";
+          if (entry.expr) md += `\n\n**Expands to:** \`${entry.expr}\``;
           if (entry.doc) md += `\n\n${entry.doc}`;
           if (entry.returns) md += `\n\n**Returns:** ${entry.returns}`;
 
@@ -63,8 +64,8 @@ export function makeNavProviders(
         const v = indexer.resolveVariableAt(document, position, w);
         if (v) {
           const scope = formatScopeType(v.scopeType, { scopeId: v.scopeId });
-          const md =
-            "```cicode\n" + `${v.type} ${v.name} // ${scope}` + "\n```";
+          let md = "```cicode\n" + `${v.type} ${v.name} // ${scope}` + "\n```";
+          if (v.doc) md += `\n\n${v.doc}`;
           return new vscode.Hover(new vscode.MarkdownString(md));
         }
 

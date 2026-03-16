@@ -10,6 +10,7 @@ export interface FunctionInfo {
   readonly location: vscode.Location | null;
   readonly bodyRange: vscode.Range | null;
   readonly doc?: string;
+  readonly expr?: string;
   readonly returns?: string;
   readonly helpPath?: string;
   readonly paramDocs?: Record<string, string>;
@@ -20,8 +21,9 @@ export interface VariableEntry {
   readonly type: string;
   readonly scopeType: ScopeType;
   readonly scopeId: string;
-  readonly location: vscode.Location;
+  readonly location: vscode.Location | null;
   readonly file: string;
   readonly range: vscode.Range | null;
   readonly isParam: boolean;
+  readonly doc?: string;
 }
