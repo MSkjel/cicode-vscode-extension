@@ -85,17 +85,34 @@ export const MISC_KEYWORDS = new Set([
   "FALSE",
 ]);
 
-/** Valid Cicode type names */
+/** Types valid in Cicode variable and function declarations */
 export const CICODE_TYPES = new Set([
   "INT",
   "REAL",
   "STRING",
   "OBJECT",
-  "VOID",
   "QUALITY",
   "TIMESTAMP",
+]);
+
+/**
+ * Tag data types. Valid in tag definitions and built-in signatures,
+ * but NOT valid in Cicode variable or function declarations.
+ */
+export const TAG_ONLY_TYPES = new Set([
+  "LONG",
+  "ULONG",
+  "BYTE",
+  "DIGITAL",
+  "UINT",
+  "BCD",
+  "LONGBCD",
+  "VOID",
   "BOOLEAN",
 ]);
 
-/** Pipe-separated pattern of all valid Cicode types, for use in RegExp */
-export const CICODE_TYPES_PATTERN = [...CICODE_TYPES].join("|");
+/** All recognized type names (Cicode + tag-only), for parsing/highlighting */
+export const ALL_TYPES = new Set([...CICODE_TYPES, ...TAG_ONLY_TYPES]);
+
+/** Pipe-separated pattern of all recognized types, for use in RegExp */
+export const CICODE_TYPES_PATTERN = [...ALL_TYPES].join("|");
