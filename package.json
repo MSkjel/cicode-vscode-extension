@@ -171,6 +171,11 @@
           "default": true,
           "description": "Warn about variables that are declared but never used."
         },
+        "cicode.diagnostics.warnInvalidTypes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn when a variable or function is declared with a tag data type that is not valid in Cicode (e.g. LONG, DIGITAL, BYTE)."
+        },
         "cicode.diagnostics.warnUndeclaredVariables": {
           "type": "boolean",
           "default": false,

@@ -11,8 +11,8 @@ import { CICODE_TYPES } from "../../../shared/constants";
 export const invalidTypesRule: Rule = {
   id: "invalidTypes",
 
-  check({ indexer, doc, diagnosticsEnabled }: CheckContext): vscode.Diagnostic[] {
-    if (!diagnosticsEnabled) return [];
+  check({ indexer, doc, diagnosticsEnabled, cfg }: CheckContext): vscode.Diagnostic[] {
+    if (!diagnosticsEnabled || !cfg.warnInvalidTypes) return [];
 
     const diags: vscode.Diagnostic[] = [];
     const file = doc.uri.fsPath;

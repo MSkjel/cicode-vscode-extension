@@ -32,6 +32,7 @@ export interface LintConfig {
   warnMagicNumbers: boolean;
   warnUnusedVariables: boolean;
   warnUndeclaredVariables: boolean;
+  warnInvalidTypes: boolean;
   ignoredUndeclaredVariables: RegExp[];
   maxCallNestingDepth: number;
   maxBlockNestingDepth: number;
@@ -55,6 +56,7 @@ export function getLintConfig(
       "cicode.diagnostics.warnUndeclaredVariables",
       true,
     ),
+    warnInvalidTypes: c.get("cicode.diagnostics.warnInvalidTypes", true),
     ignoredUndeclaredVariables: (
       c.get("cicode.diagnostics.ignoredUndeclaredVariables", []) as string[]
     ).map((v) => new RegExp(v, "i")),
