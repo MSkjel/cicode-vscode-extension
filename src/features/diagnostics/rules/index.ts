@@ -6,6 +6,7 @@ import { returnTypeRule } from "./returnType";
 import { unusedVarsRule } from "./unusedVars";
 import { undeclaredVarsRule } from "./undeclaredVars";
 import { unreachableCodeRule } from "./unreachableCode";
+import { invalidTypesRule } from "./invalidTypes";
 import {
   lineLengthRule,
   mixedIndentRule,
@@ -26,6 +27,7 @@ export const ALL_RULES: Rule[] = [
   controlFlowRule,
   returnTypeRule,
   unreachableCodeRule,
+  invalidTypesRule,
 
   // Configurable checks
   unusedVarsRule,
