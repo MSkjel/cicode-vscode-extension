@@ -11,7 +11,12 @@ import { CICODE_TYPES } from "../../../shared/constants";
 export const invalidTypesRule: Rule = {
   id: "invalidTypes",
 
-  check({ indexer, doc, diagnosticsEnabled, cfg }: CheckContext): vscode.Diagnostic[] {
+  check({
+    indexer,
+    doc,
+    diagnosticsEnabled,
+    cfg,
+  }: CheckContext): vscode.Diagnostic[] {
     if (!diagnosticsEnabled || !cfg.warnInvalidTypes) return [];
 
     const diags: vscode.Diagnostic[] = [];
