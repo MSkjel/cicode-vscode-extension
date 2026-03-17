@@ -109,7 +109,7 @@
     },
     {
       "name": "meta.function.cicode",
-      "begin": "(?i)^\\s*(?:(?:private|public|global|module|const|static)\\s+)*(?:(boolean|bool|int|real|long|ulong|string|object|module|quality|timestamp|void)\\s+)?function\\s+(\\w+)\\s*\\(",
+      "begin": "(?i)^\\s*(?:(?:private|public|global|module|const|static)\\s+)*(?:(boolean|bool|int|real|long|ulong|byte|digital|uint|bcd|longbcd|string|object|module|quality|timestamp|void)\\s+)?function\\s+(\\w+)\\s*\\(",
       "beginCaptures": {
         "1": { "name": "storage.type.cicode" },
         "2": { "name": "entity.name.function.cicode" },
@@ -122,7 +122,7 @@
     },
     {
       "name": "meta.function.cicode",
-      "begin": "(?i)^\\s*(?:(?:private|public|global|module|const|static)\\s+)*(?:(?:boolean|bool|int|real|long|ulong|string|object|module|quality|timestamp|void)\\s+)?function\\b(?![^\\r\\n]*\\()",
+      "begin": "(?i)^\\s*(?:(?:private|public|global|module|const|static)\\s+)*(?:(?:boolean|bool|int|real|long|ulong|byte|digital|uint|bcd|longbcd|string|object|module|quality|timestamp|void)\\s+)?function\\b(?![^\\r\\n]*\\()",
       "beginCaptures": {
         "0": { "name": "keyword.declaration.function.cicode" }
       },
@@ -164,7 +164,7 @@
       "captures": { "1": { "name": "entity.name.function.call.cicode" } }
     },
     {
-      "match": "\\b(?i:(int|real|void|string|object|quality|timestamp|boolean))\\b",
+      "match": "\\b(?i:(int|real|void|string|object|quality|timestamp|boolean|long|ulong|byte|digital|uint|bcd|longbcd))\\b",
       "name": "storage.type.cicode"
     },
     {
@@ -254,7 +254,7 @@
     },
     {
       "comment": "Variable/identifier references (excludes keywords and function calls)",
-      "match": "\\b(?!(?i:if|while|for|repeat|try|then|else|do|to|until|goto|break|continue|exit|abort|raise|return|except|finally|select|case|end|function|and|or|xor|not|div|mod|shl|shr|bitand|bitor|module|global|private|public|const|static|boolean|bool|int|real|void|long|ulong|string|object|quality|timestamp)\\b)([a-zA-Z_][a-zA-Z0-9_]*)\\b(?!\\s*\\()",
+      "match": "\\b(?!(?i:if|while|for|repeat|try|then|else|do|to|until|goto|break|continue|exit|abort|raise|return|except|finally|select|case|end|function|and|or|xor|not|div|mod|shl|shr|bitand|bitor|module|global|private|public|const|static|boolean|bool|int|real|void|long|ulong|byte|digital|uint|bcd|longbcd|string|object|quality|timestamp)\\b)([a-zA-Z_][a-zA-Z0-9_]*)\\b(?!\\s*\\()",
       "name": "variable.other.cicode"
     }
   ],
