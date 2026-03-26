@@ -253,18 +253,12 @@ export function makeCompletion(
           )
             continue;
         } else if (ctx === "statement") {
-          // At line-start, operator keywords (AND, OR, NOT…) are never valid
+          // At line-start, operator keywords (AND, OR, NOT) are never valid
           if (KW_OPERATORS.has(kw)) continue;
         } else if (ctx === "type" || ctx === "declaration") {
-          // After a type keyword (with or without a partial identifier already typed),
-          // only type/scope keywords are meaningful, this keeps FUNCTION
-          // visible so "INT F" still suggests "FUNCTION"
-          if (
-            KW_CONTROL_FLOW.has(kw) ||
-            KW_CONTROL.has(kw) ||
-            KW_OPERATORS.has(kw)
-          )
-            continue;
+          // After a type keyword (with or without a partial name typed),
+          // only FUNCTION is meaningful. e.g. "INT F" suggest "FUNCTION"
+          if (kw !== "function") continue;
         }
 
         const upper = kw.toUpperCase();
