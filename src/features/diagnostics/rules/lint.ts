@@ -115,18 +115,16 @@ export const missingSemicolonRule: Rule = {
 export const keywordCaseRule: Rule = {
   id: "keywordCase",
 
-  check({ doc, cfg }: CheckContext): vscode.Diagnostic[] {
+  check({ doc, cfg, ignoreNoHeaders }: CheckContext): vscode.Diagnostic[] {
     if (!cfg.enabled || !cfg.warnKeywordCase) return [];
 
     const diags: vscode.Diagnostic[] = [];
     for (let i = 0; i < doc.lineCount; i++) {
-      const L = doc.lineAt(i);
-      const s = L.text;
-      if (/^\s*(\/\/|!)/.test(s.trim())) continue;
-
+      const s = doc.lineAt(i).text;
       const m = s.match(KEYWORD_CASE_RE);
       if (m && m[0] !== m[0].toUpperCase()) {
         const idx = m.index || 0;
+        if (inSpan(doc.offsetAt(new vscode.Position(i, idx)), ignoreNoHeaders)) continue;
         diags.push(
           hint(
             new vscode.Range(
