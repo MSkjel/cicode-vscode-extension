@@ -12,52 +12,57 @@ export function makeSymbols(
 
 export function makeSymbols(indexer: Indexer, workspace = false) {
   if (workspace) {
+    type CachedSym = { lower: string; sym: vscode.SymbolInformation };
+    let cache: CachedSym[] | null = null;
+    indexer.onIndexed(() => {
+      cache = null;
+    });
+
+    function buildCache(): CachedSym[] {
+      const result: CachedSym[] = [];
+      for (const [, f] of indexer.getAllFunctions()) {
+        result.push({
+          lower: f.name.toLowerCase(),
+          sym: new vscode.SymbolInformation(
+            f.name,
+            vscode.SymbolKind.Function,
+            "",
+            f.location ??
+              new vscode.Location(
+                vscode.Uri.file(""),
+                new vscode.Position(0, 0),
+              ),
+          ),
+        });
+      }
+      for (const v of indexer.getAllVariableEntries()) {
+        if (!v.location) continue;
+        const detail =
+          v.scopeType === "global"
+            ? "Global"
+            : v.scopeType === "module"
+              ? "Module"
+              : `Local (${v.scopeId})`;
+        result.push({
+          lower: v.name.toLowerCase(),
+          sym: new vscode.SymbolInformation(
+            v.name,
+            vscode.SymbolKind.Variable,
+            detail,
+            v.location,
+          ),
+        });
+      }
+      return result;
+    }
+
     const provider: vscode.WorkspaceSymbolProvider<vscode.SymbolInformation> = {
-      async provideWorkspaceSymbols(
-        query: string,
-        _token: vscode.CancellationToken,
-      ) {
+      provideWorkspaceSymbols(query: string, _token: vscode.CancellationToken) {
         const q = (query || "").toLowerCase();
-        const out: vscode.SymbolInformation[] = [];
-
-        for (const [, f] of indexer.getAllFunctions()) {
-          const key = f.name.toLowerCase();
-          if (!q || key.includes(q)) {
-            out.push(
-              new vscode.SymbolInformation(
-                f.name,
-                vscode.SymbolKind.Function,
-                "",
-                f.location ||
-                  new vscode.Location(
-                    vscode.Uri.file(""),
-                    new vscode.Position(0, 0),
-                  ),
-              ),
-            );
-          }
-        }
-
-        for (const v of indexer.getAllVariableEntries()) {
-          const key = v.name.toLowerCase();
-          if (q && !key.includes(q)) continue;
-          const detail =
-            v.scopeType === "global"
-              ? "Global"
-              : v.scopeType === "module"
-                ? "Module"
-                : `Local (${v.scopeId})`;
-          if (v.location) {
-            out.push(
-              new vscode.SymbolInformation(
-                v.name,
-                vscode.SymbolKind.Variable,
-                detail,
-                v.location,
-              ),
-            );
-          }
-        }
+        if (!cache) cache = buildCache();
+        const out = q
+          ? cache.filter((c) => c.lower.includes(q)).map((c) => c.sym)
+          : cache.map((c) => c.sym);
         return out;
       },
     };

@@ -144,11 +144,19 @@ function scanCommentAndStringSpans(text: string): Array<[number, number]> {
   return mergeSpans(spans);
 }
 
+const _spanCache = new Map<
+  boolean,
+  { text: string; spans: Array<[number, number]> }
+>();
+
 export function buildIgnoreSpans(
   text: string,
   opts: { includeFunctionHeaders?: boolean } = {},
 ): Array<[number, number]> {
   const { includeFunctionHeaders = true } = opts;
+
+  const cached = _spanCache.get(includeFunctionHeaders);
+  if (cached && cached.text === text) return cached.spans;
 
   const spans = scanCommentAndStringSpans(text);
 
@@ -190,7 +198,9 @@ export function buildIgnoreSpans(
     }
   }
 
-  return mergeSpans(spans);
+  const result = mergeSpans(spans);
+  _spanCache.set(includeFunctionHeaders, { text, spans: result });
+  return result;
 }
 
 export function stripLineComments(s: string): string {

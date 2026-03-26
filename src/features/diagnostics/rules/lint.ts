@@ -28,6 +28,9 @@ const DECLARATION_LINE_RE = new RegExp(
   `^\\s*(?:(?:GLOBAL|MODULE)\\s+)?(?:${[...CICODE_TYPES].join("|")})\\s+\\w+`,
   "i",
 );
+const NUM_RE = /\b(\d+(?:\.\d+)?)\b/g;
+const ARRAY_INDEX_RE = /\[\s*\d+\s*\]/;
+const TOKEN_RE = /\b([A-Za-z_]\w*)\b/g;
 
 /** Warn when lines exceed the configured maximum length. */
 export const lineLengthRule: Rule = {
@@ -115,18 +118,17 @@ export const missingSemicolonRule: Rule = {
 export const keywordCaseRule: Rule = {
   id: "keywordCase",
 
-  check({ doc, cfg }: CheckContext): vscode.Diagnostic[] {
+  check({ doc, cfg, ignoreNoHeaders }: CheckContext): vscode.Diagnostic[] {
     if (!cfg.enabled || !cfg.warnKeywordCase) return [];
 
     const diags: vscode.Diagnostic[] = [];
     for (let i = 0; i < doc.lineCount; i++) {
-      const L = doc.lineAt(i);
-      const s = L.text;
-      if (/^\s*(\/\/|!)/.test(s.trim())) continue;
-
+      const s = doc.lineAt(i).text;
       const m = s.match(KEYWORD_CASE_RE);
       if (m && m[0] !== m[0].toUpperCase()) {
         const idx = m.index || 0;
+        if (inSpan(doc.offsetAt(new vscode.Position(i, idx)), ignoreNoHeaders))
+          continue;
         diags.push(
           hint(
             new vscode.Range(
@@ -163,12 +165,12 @@ export const magicNumbersRule: Rule = {
       const isDeclarationLine = DECLARATION_LINE_RE.test(s);
       if (isDeclarationLine) continue;
 
-      const numRe = /\b(\d+(?:\.\d+)?)\b/g;
+      NUM_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
-      while ((m = numRe.exec(s))) {
+      while ((m = NUM_RE.exec(s))) {
         const num = parseFloat(m[1]);
         const absPos = doc.offsetAt(new vscode.Position(i, m.index));
-        const isArrayIndex = /\[\s*\d+\s*\]/.test(
+        const isArrayIndex = ARRAY_INDEX_RE.test(
           s.slice(Math.max(0, m.index - 2), m.index + m[1].length + 2),
         );
 
@@ -285,10 +287,10 @@ export const blockNestingRule: Rule = {
       const body = text.slice(bodyStartAbs, bodyEndAbs);
 
       let depth = 0;
-      const tokenRe = /\b([A-Za-z_]\w*)\b/g;
+      TOKEN_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
 
-      while ((m = tokenRe.exec(body))) {
+      while ((m = TOKEN_RE.exec(body))) {
         const absPos = bodyStartAbs + m.index;
         if (inSpan(absPos, ignoreNoHeaders)) continue;
 
