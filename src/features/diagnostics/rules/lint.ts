@@ -127,7 +127,8 @@ export const keywordCaseRule: Rule = {
       const m = s.match(KEYWORD_CASE_RE);
       if (m && m[0] !== m[0].toUpperCase()) {
         const idx = m.index || 0;
-        if (inSpan(doc.offsetAt(new vscode.Position(i, idx)), ignoreNoHeaders)) continue;
+        if (inSpan(doc.offsetAt(new vscode.Position(i, idx)), ignoreNoHeaders))
+          continue;
         diags.push(
           hint(
             new vscode.Range(

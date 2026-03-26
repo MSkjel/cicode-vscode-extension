@@ -14,7 +14,9 @@ export function makeSymbols(indexer: Indexer, workspace = false) {
   if (workspace) {
     type CachedSym = { lower: string; sym: vscode.SymbolInformation };
     let cache: CachedSym[] | null = null;
-    indexer.onIndexed(() => { cache = null; });
+    indexer.onIndexed(() => {
+      cache = null;
+    });
 
     function buildCache(): CachedSym[] {
       const result: CachedSym[] = [];
@@ -25,19 +27,30 @@ export function makeSymbols(indexer: Indexer, workspace = false) {
             f.name,
             vscode.SymbolKind.Function,
             "",
-            f.location ?? new vscode.Location(vscode.Uri.file(""), new vscode.Position(0, 0)),
+            f.location ??
+              new vscode.Location(
+                vscode.Uri.file(""),
+                new vscode.Position(0, 0),
+              ),
           ),
         });
       }
       for (const v of indexer.getAllVariableEntries()) {
         if (!v.location) continue;
         const detail =
-          v.scopeType === "global" ? "Global"
-          : v.scopeType === "module" ? "Module"
-          : `Local (${v.scopeId})`;
+          v.scopeType === "global"
+            ? "Global"
+            : v.scopeType === "module"
+              ? "Module"
+              : `Local (${v.scopeId})`;
         result.push({
           lower: v.name.toLowerCase(),
-          sym: new vscode.SymbolInformation(v.name, vscode.SymbolKind.Variable, detail, v.location),
+          sym: new vscode.SymbolInformation(
+            v.name,
+            vscode.SymbolKind.Variable,
+            detail,
+            v.location,
+          ),
         });
       }
       return result;
@@ -47,7 +60,9 @@ export function makeSymbols(indexer: Indexer, workspace = false) {
       provideWorkspaceSymbols(query: string, _token: vscode.CancellationToken) {
         const q = (query || "").toLowerCase();
         if (!cache) cache = buildCache();
-        const out = q ? cache.filter(c => c.lower.includes(q)).map(c => c.sym) : cache.map(c => c.sym);
+        const out = q
+          ? cache.filter((c) => c.lower.includes(q)).map((c) => c.sym)
+          : cache.map((c) => c.sym);
         return out;
       },
     };
