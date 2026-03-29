@@ -11,6 +11,7 @@ import { makeInlay } from "./inlay";
 import { makeSemanticTokens } from "./semanticTokens";
 import { makeFormatter } from "./formatter";
 import { makeCodeLens } from "./codeLens";
+import { error } from "../../shared/utils";
 
 export function registerProviders(
   context: vscode.ExtensionContext,
@@ -104,7 +105,7 @@ export function registerProviders(
     );
   } catch (err) {
     // Cleanup any successful registrations on error
-    console.error("Cicode: Failed to register providers:", err);
+    error("Cicode: Failed to register providers:", err);
     for (const d of disposables) {
       try {
         d.dispose();

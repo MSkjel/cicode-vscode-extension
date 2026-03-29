@@ -10,6 +10,7 @@ import {
   STRUCTURAL_KEYWORDS,
   STATEMENT_BOUNDARY_KEYWORDS,
   MISC_KEYWORDS,
+  TOKEN_RE,
 } from "../../../shared/constants";
 
 const SKIP_IDENTIFIERS = new Set([
@@ -44,7 +45,8 @@ export const undeclaredVarsRule: Rule = {
       const bodyEndAbs = doc.offsetAt(f.bodyRange.end);
       const body = text.slice(bodyStartAbs, bodyEndAbs);
 
-      const tokenRe = /\b([A-Za-z_]\w*)\b/g;
+      TOKEN_RE.lastIndex = 0;
+      const tokenRe = TOKEN_RE;
       let m: RegExpExecArray | null;
 
       while ((m = tokenRe.exec(body))) {

@@ -1,6 +1,15 @@
 import * as vscode from "vscode";
 import { CICODE_TYPES_PATTERN } from "./constants";
 
+const _CLEAN_PARAM_TYPE_PREFIX = new RegExp(
+  `^(${CICODE_TYPES_PATTERN}|UNKNOWN)\\s+`,
+  "i",
+);
+const _CLEAN_PARAM_TYPE_SUFFIX = new RegExp(
+  `:\\s*(${CICODE_TYPES_PATTERN}|UNKNOWN)\\b`,
+  "i",
+);
+
 export function isInCommentOrString(
   document: vscode.TextDocument,
   position: vscode.Position,
@@ -36,9 +45,14 @@ export function mergeSpans(
 }
 
 export function inSpan(pos: number, spans: Array<[number, number]>): boolean {
-  for (const [s, e] of spans) {
+  let lo = 0,
+    hi = spans.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const [s, e] = spans[mid];
     if (pos >= s && pos < e) return true;
-    if (pos < s) break;
+    if (pos < s) hi = mid - 1;
+    else lo = mid + 1;
   }
   return false;
 }
@@ -138,6 +152,14 @@ function scanCommentAndStringSpans(text: string): Array<[number, number]> {
       continue;
     }
 
+    if (ch === "|") {
+      const start = i;
+      const nl = text.indexOf("\n", i);
+      i = nl === -1 ? N : nl;
+      push(start, i);
+      continue;
+    }
+
     i++;
   }
 
@@ -149,6 +171,65 @@ const _spanCache = new Map<
   { text: string; spans: Array<[number, number]> }
 >();
 
+function _addFunctionHeaderSpans(
+  text: string,
+  base: Array<[number, number]>,
+): Array<[number, number]> {
+  const extra: Array<[number, number]> = [];
+  const re = /(^|\n)\s*(?:[A-Za-z_]\w*\s+)*function\b/gim;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const start = m.index + (m[1] ? m[1].length : 0);
+    if (inSpan(start, base)) continue;
+
+    // Find opening paren
+    let pos = m.index + m[0].length;
+    while (pos < text.length && /[\s\r\n]/.test(text[pos])) pos++;
+
+    // Expect name then paren, or just paren
+    if (pos < text.length && /[A-Za-z_]/.test(text[pos])) {
+      while (pos < text.length && /[A-Za-z0-9_]/.test(text[pos])) pos++;
+      while (pos < text.length && /[\s\r\n]/.test(text[pos])) pos++;
+    }
+
+    if (pos >= text.length || text[pos] !== "(") continue;
+
+    // Find matching close paren, respecting base spans
+    let depth = 1;
+    pos++;
+    while (pos < text.length && depth > 0) {
+      if (!inSpan(pos, base)) {
+        if (text[pos] === "(") depth++;
+        else if (text[pos] === ")") depth--;
+      }
+      pos++;
+    }
+
+    if (depth === 0) {
+      extra.push([start, pos]);
+    }
+
+    if (re.lastIndex === m.index) re.lastIndex++;
+  }
+  return mergeSpans([...base, ...extra]);
+}
+
+export function buildBothIgnoreSpans(text: string): {
+  ignore: Array<[number, number]>;
+  ignoreNoHeaders: Array<[number, number]>;
+} {
+  const cachedF = _spanCache.get(false);
+  const cachedT = _spanCache.get(true);
+  if (cachedF?.text === text && cachedT?.text === text) {
+    return { ignore: cachedT.spans, ignoreNoHeaders: cachedF.spans };
+  }
+  const ignoreNoHeaders = mergeSpans(scanCommentAndStringSpans(text));
+  const ignore = _addFunctionHeaderSpans(text, ignoreNoHeaders);
+  _spanCache.set(false, { text, spans: ignoreNoHeaders });
+  _spanCache.set(true, { text, spans: ignore });
+  return { ignore, ignoreNoHeaders };
+}
+
 export function buildIgnoreSpans(
   text: string,
   opts: { includeFunctionHeaders?: boolean } = {},
@@ -158,49 +239,12 @@ export function buildIgnoreSpans(
   const cached = _spanCache.get(includeFunctionHeaders);
   if (cached && cached.text === text) return cached.spans;
 
-  const spans = scanCommentAndStringSpans(text);
-
   if (includeFunctionHeaders) {
-    const re = /(^|\n)\s*(?:[A-Za-z_]\w*\s+)*function\b/gim;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text))) {
-      const start = m.index + (m[1] ? m[1].length : 0);
-      if (inSpan(start, spans)) continue;
-
-      // Find opening paren
-      let pos = m.index + m[0].length;
-      while (pos < text.length && /[\s\r\n]/.test(text[pos])) pos++;
-
-      // Expect name then paren, or just paren
-      if (pos < text.length && /[A-Za-z_]/.test(text[pos])) {
-        while (pos < text.length && /[A-Za-z0-9_]/.test(text[pos])) pos++;
-        while (pos < text.length && /[\s\r\n]/.test(text[pos])) pos++;
-      }
-
-      if (pos >= text.length || text[pos] !== "(") continue;
-
-      // Find matching close paren, respecting ignore spans
-      let depth = 1;
-      pos++;
-      while (pos < text.length && depth > 0) {
-        if (!inSpan(pos, spans)) {
-          if (text[pos] === "(") depth++;
-          else if (text[pos] === ")") depth--;
-        }
-        pos++;
-      }
-
-      if (depth === 0) {
-        spans.push([start, pos]);
-      }
-
-      if (re.lastIndex === m.index) re.lastIndex++;
-    }
+    return buildBothIgnoreSpans(text).ignore;
   }
-
-  const result = mergeSpans(spans);
-  _spanCache.set(includeFunctionHeaders, { text, spans: result });
-  return result;
+  const spans = mergeSpans(scanCommentAndStringSpans(text));
+  _spanCache.set(false, { text, spans });
+  return spans;
 }
 
 export function stripLineComments(s: string): string {
@@ -277,15 +321,24 @@ export function cleanParamName(param?: string | null): string {
   p = p.replace(/[\[\]]/g, " ").trim();
   p = p.replace(/\s*=\s*[^,)]+$/, "").trim();
   p = p.replace(/^(GLOBAL|LOCAL|CONST|PUBLIC|PRIVATE)\s+/i, "");
-  p = p.replace(new RegExp(`^(${CICODE_TYPES_PATTERN}|UNKNOWN)\\s+`, "i"), "");
-  p = p.replace(
-    new RegExp(`:\\s*(${CICODE_TYPES_PATTERN}|UNKNOWN)\\b`, "i"),
-    "",
-  );
+  p = p.replace(_CLEAN_PARAM_TYPE_PREFIX, "");
+  p = p.replace(_CLEAN_PARAM_TYPE_SUFFIX, "");
   p = p.replace(/:$/, "");
   p = p.replace(/\s+/g, " ").trim();
   const m = p.match(/^[A-Za-z_]\w*/);
   return m ? m[0] : p;
+}
+
+export function isCommentLine(line: string): boolean {
+  return /^\s*(\/\/|!|\|)/.test(line);
+}
+
+export function getSymbolAtPosition(
+  doc: vscode.TextDocument,
+  position: vscode.Position,
+): string | null {
+  const wr = doc.getWordRangeAtPosition(position, /\w+/);
+  return wr ? doc.getText(wr) : null;
 }
 
 export function leftWordRangeAt(
@@ -611,7 +664,6 @@ function parseNonXmlDocLines(lines: string[]): {
   let returns: string | undefined;
   {
     const m = /[@\\](?:return(?:s)?)(?:[\s\n]?\s?)(.*)/i.exec(raw);
-    console.log(m);
     if (m) returns = normalizeDocText(m[1].trim());
   }
 

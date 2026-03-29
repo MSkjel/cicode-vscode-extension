@@ -1,3 +1,5 @@
+import { escapeRegExp } from "./utils";
+
 // =============================================================================
 // Span Utilities
 // =============================================================================
@@ -327,4 +329,28 @@ export function splitParamsTopLevel(raw: string): string[] {
   const last = raw.slice(start).trim();
   if (last) result.push(last);
   return result;
+}
+
+// =============================================================================
+// Definition Offset Utilities
+// =============================================================================
+
+/**
+ * Build the set of text offsets where function names are *defined* (not
+ * referenced). Used to exclude definition sites from reference/rename results.
+ */
+export function buildDefinitionOffsets(
+  text: string,
+  functionRanges: ReadonlyArray<{ name: string; headerIndex: number }>,
+): Set<number> {
+  const offsets = new Set<number>();
+  for (const fr of functionRanges) {
+    let parenPos = text.indexOf("(", fr.headerIndex);
+    if (parenPos < 0) parenPos = fr.headerIndex;
+    const headerRegion = text.slice(fr.headerIndex, parenPos);
+    const nameRe = new RegExp(`\\b${escapeRegExp(fr.name)}\\b`, "i");
+    const nm = nameRe.exec(headerRegion);
+    if (nm) offsets.add(fr.headerIndex + nm.index);
+  }
+  return offsets;
 }

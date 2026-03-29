@@ -116,3 +116,12 @@ export const ALL_TYPES = new Set([...CICODE_TYPES, ...TAG_ONLY_TYPES]);
 
 /** Pipe-separated pattern of all recognized types, for use in RegExp */
 export const CICODE_TYPES_PATTERN = [...ALL_TYPES].join("|");
+
+/** Matches function call syntax: identifier followed by "(" */
+export const CALL_RE = /\b([A-Za-z_]\w*)\s*\(/g;
+
+/** Matches any identifier token (with capture group) */
+export const TOKEN_RE = /\b([A-Za-z_]\w*)\b/g;
+
+/** Matches any identifier token (no capture group) */
+export const WORD_RE = /\b[A-Za-z_]\w*\b/g;

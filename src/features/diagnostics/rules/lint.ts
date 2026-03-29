@@ -2,13 +2,14 @@ import * as vscode from "vscode";
 import type { Rule } from "../rule";
 import type { CheckContext } from "../context";
 import { hint, info } from "../diag";
-import { inSpan, TYPE_RE } from "../../../shared/textUtils";
+import { inSpan, TYPE_RE, isCommentLine } from "../../../shared/textUtils";
 import {
   BLOCK_OPENERS,
   BLOCK_START_KEYWORDS,
   STRUCTURAL_KEYWORDS,
   STATEMENT_BOUNDARY_KEYWORDS,
   CICODE_TYPES,
+  TOKEN_RE,
 } from "../../../shared/constants";
 
 const KEYWORD_CASE_RE = new RegExp(
@@ -30,7 +31,6 @@ const DECLARATION_LINE_RE = new RegExp(
 );
 const NUM_RE = /\b(\d+(?:\.\d+)?)\b/g;
 const ARRAY_INDEX_RE = /\[\s*\d+\s*\]/;
-const TOKEN_RE = /\b([A-Za-z_]\w*)\b/g;
 
 /** Warn when lines exceed the configured maximum length. */
 export const lineLengthRule: Rule = {
@@ -43,7 +43,7 @@ export const lineLengthRule: Rule = {
     for (let i = 0; i < doc.lineCount; i++) {
       const L = doc.lineAt(i);
       const s = L.text;
-      if (/^\s*(\/\/|!)/.test(s.trim())) continue;
+      if (isCommentLine(s)) continue;
       if (s.length > cfg.maxLineLength) {
         diags.push(
           hint(
@@ -95,7 +95,7 @@ export const missingSemicolonRule: Rule = {
     for (let i = 0; i < doc.lineCount; i++) {
       const L = doc.lineAt(i);
       const s = L.text;
-      if (/^\s*(\/\/|!)/.test(s.trim())) continue;
+      if (isCommentLine(s)) continue;
 
       if (/^\s*((?:GLOBAL|MODULE)\s+)?(\w+)\s+\w+(\s*,\s*\w+)*\s*$/i.test(s)) {
         const typeWord =
@@ -160,7 +160,7 @@ export const magicNumbersRule: Rule = {
     for (let i = 0; i < doc.lineCount; i++) {
       const L = doc.lineAt(i);
       const s = L.text;
-      if (/^\s*(\/\/|!)/.test(s.trim())) continue;
+      if (isCommentLine(s)) continue;
 
       const isDeclarationLine = DECLARATION_LINE_RE.test(s);
       if (isDeclarationLine) continue;

@@ -4,6 +4,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import * as cheerio from "cheerio";
 import { BuiltinFunction } from "./types";
+import { error } from "../../shared/utils";
 
 let builtinCache: Map<string, BuiltinFunction> = new Map();
 const CACHE_FILE = "builtinFunctions.json";
@@ -140,7 +141,8 @@ function asMap(
   obj: Record<string, BuiltinFunction> | undefined | null,
 ): Map<string, BuiltinFunction> {
   const m = new Map<string, BuiltinFunction>();
-  for (const k of Object.keys(obj || {})) m.set(k, (obj as any)[k]);
+  for (const k of Object.keys(obj || {}))
+    m.set(k, (obj as Record<string, BuiltinFunction>)[k]);
   return m;
 }
 
@@ -184,7 +186,9 @@ export async function initBuiltins(
 
   try {
     await rebuildBuiltins(context, cfg);
-  } catch {}
+  } catch (e) {
+    error("Cicode: Failed to rebuild builtins from help files:", e);
+  }
   if (loadFromDisk()) return;
 
   loadFromShipped();
@@ -311,7 +315,7 @@ export async function rebuildBuiltins(
         helpPath: file, // Just store filename, construct full path at runtime
       };
     } catch (e) {
-      console.error("builtin parse fail", file, e);
+      error("builtin parse fail", file, e);
     }
   }
 
@@ -323,11 +327,15 @@ function save(
   obj: Record<string, BuiltinFunction>,
 ): Map<string, BuiltinFunction> {
   const file = path.join(context.globalStorageUri.fsPath, CACHE_FILE);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(
-    file,
-    JSON.stringify({ v: CACHE_VERSION, functions: obj }, null, 2),
-  );
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ v: CACHE_VERSION, functions: obj }),
+    );
+  } catch (e) {
+    error("Cicode: Failed to save builtin cache:", file, e);
+  }
   builtinCache = asMap(obj);
   return builtinCache;
 }

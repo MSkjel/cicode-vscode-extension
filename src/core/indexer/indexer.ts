@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { debounce } from "../../shared/utils";
+import { debounce, error } from "../../shared/utils";
 import { CICODE_TYPES_PATTERN } from "../../shared/constants";
 import {
   TYPE_RE,
@@ -36,6 +36,7 @@ export class Indexer {
   // Reverse indexes for O(1) file purge instead of O(n) iteration
   private readonly _functionKeysByFile = new Map<string, Set<string>>();
   private readonly _variableKeysByFile = new Map<string, Set<string>>();
+  private readonly _labelKeysByFile = new Map<string, Set<string>>();
 
   private readonly _onIndexed = new vscode.EventEmitter<string | undefined>();
   /** Fires after indexing completes. Carries the file path for single-file reindex, undefined for full rebuild. */
@@ -121,7 +122,7 @@ export class Indexer {
         const doc = await vscode.workspace.openTextDocument(file);
         await this._indexFile(doc);
       } catch (e) {
-        console.error("index fail", file.fsPath, e);
+        error("index fail", file.fsPath, e);
       }
     }
     this._bulkIndexing = false;
@@ -148,10 +149,9 @@ export class Indexer {
       if (parenIdx !== -1) {
         // Function-like macro: index into functionCache
         const funcName = rec.name.slice(0, parenIdx).trim();
-        const paramStr = rec.name.slice(
-          parenIdx + 1,
-          rec.name.lastIndexOf(")"),
-        );
+        const closeIdx = rec.name.lastIndexOf(")");
+        if (closeIdx === -1) continue; // malformed entry — skip
+        const paramStr = rec.name.slice(parenIdx + 1, closeIdx);
         const params = paramStr
           ? paramStr
               .split(",")
@@ -170,12 +170,14 @@ export class Indexer {
             expr: rec.expr || undefined,
             doc: rec.comment || undefined,
           });
+          this._addToReverseIndex(this._functionKeysByFile, filePath, key);
         }
       } else {
         // Constant: index into labelCache
         const key = rec.name.trim().toLowerCase();
         if (key && !this.labelCache.has(key)) {
           this.labelCache.set(key, rec);
+          this._addToReverseIndex(this._labelKeysByFile, filePath, key);
         }
       }
     }
@@ -185,10 +187,7 @@ export class Indexer {
     const records = parseLocvarDbf(filePath);
     for (const rec of records) {
       const key = rec.name.toLowerCase();
-      if (!this._variableKeysByFile.has(filePath)) {
-        this._variableKeysByFile.set(filePath, new Set());
-      }
-      this._variableKeysByFile.get(filePath)!.add(key);
+      this._addToReverseIndex(this._variableKeysByFile, filePath, key);
       if (!this.variableCache.has(key)) this.variableCache.set(key, []);
       this.variableCache.get(key)!.push({
         name: rec.name,
@@ -222,12 +221,18 @@ export class Indexer {
   }
 
   private _reindexLabelsFile(filePath: string): void {
-    // Purge function entries and label entries sourced from this specific file
-    for (const [key, f] of this.functionCache) {
-      if (f.file === filePath) this.functionCache.delete(key);
+    // Purge function-like macros using reverse index — O(entries_in_file)
+    const funcKeys = this._functionKeysByFile.get(filePath);
+    if (funcKeys) {
+      for (const key of funcKeys) this.functionCache.delete(key);
+      this._functionKeysByFile.delete(filePath);
     }
-    for (const [key, label] of this.labelCache) {
-      if (label.file === filePath) this.labelCache.delete(key);
+
+    // Purge label constants using reverse index — O(entries_in_file)
+    const labelKeys = this._labelKeysByFile.get(filePath);
+    if (labelKeys) {
+      for (const key of labelKeys) this.labelCache.delete(key);
+      this._labelKeysByFile.delete(filePath);
     }
 
     // Re-index
@@ -300,26 +305,40 @@ export class Indexer {
       this._ignoreSpansByFile.delete(oldPath);
     }
     // Update reverse indexes
-    if (this._functionKeysByFile.has(oldPath)) {
-      this._functionKeysByFile.set(
-        newPath,
-        this._functionKeysByFile.get(oldPath)!,
-      );
-      this._functionKeysByFile.delete(oldPath);
-    }
-    if (this._variableKeysByFile.has(oldPath)) {
-      this._variableKeysByFile.set(
-        newPath,
-        this._variableKeysByFile.get(oldPath)!,
-      );
-      this._variableKeysByFile.delete(oldPath);
-    }
+    this._moveReverseIndex(this._functionKeysByFile, oldPath, newPath);
+    this._moveReverseIndex(this._variableKeysByFile, oldPath, newPath);
+    this._moveReverseIndex(this._labelKeysByFile, oldPath, newPath);
     this._onIndexed.fire(newPath);
   }
 
   /** Generate unique scope ID for local variables */
   localScopeId(file: string, funcName: string) {
     return `local:${file}::${funcName}`;
+  }
+
+  private _addToReverseIndex(
+    index: Map<string, Set<string>>,
+    file: string,
+    key: string,
+  ): void {
+    let s = index.get(file);
+    if (!s) {
+      s = new Set();
+      index.set(file, s);
+    }
+    s.add(key);
+  }
+
+  private _moveReverseIndex(
+    index: Map<string, Set<string>>,
+    oldPath: string,
+    newPath: string,
+  ): void {
+    const s = index.get(oldPath);
+    if (s) {
+      index.set(newPath, s);
+      index.delete(oldPath);
+    }
   }
 
   private async _indexFile(doc: vscode.TextDocument): Promise<void> {
@@ -335,7 +354,7 @@ export class Indexer {
     const functions = this._extractFunctionsWithRanges(text, doc, ignoreSpans);
     this.functionRangesByFile.set(file, functions);
 
-    for (const f of functions as any[]) {
+    for (const f of functions) {
       const key = f.name.toLowerCase();
       const params = splitParamsTopLevel(f.paramsRaw).filter(Boolean);
 
@@ -352,10 +371,7 @@ export class Indexer {
       });
 
       // Track in reverse index for efficient purge
-      if (!this._functionKeysByFile.has(file)) {
-        this._functionKeysByFile.set(file, new Set());
-      }
-      this._functionKeysByFile.get(file)!.add(key);
+      this._addToReverseIndex(this._functionKeysByFile, file, key);
 
       // Register function parameters as local variables
       for (const v of this._parseParamVariables(params)) {
@@ -382,10 +398,7 @@ export class Indexer {
     this.variableCache.get(k)!.push(entry);
 
     // Track in reverse index for efficient purge
-    if (!this._variableKeysByFile.has(entry.file)) {
-      this._variableKeysByFile.set(entry.file, new Set());
-    }
-    this._variableKeysByFile.get(entry.file)!.add(k);
+    this._addToReverseIndex(this._variableKeysByFile, entry.file, k);
   }
 
   /**
@@ -463,6 +476,7 @@ export class Indexer {
           i < text.length && i < openParenPos + 5000;
           i++
         ) {
+          if (inSpan(i, ignoreCS)) continue;
           const ch = text[i];
           if (ch === "(") depth++;
           else if (ch === ")") {
@@ -782,7 +796,7 @@ export class Indexer {
     return this.functionCache.has(name.toLowerCase());
   }
 
-  getAllFunctions() {
+  getAllFunctions(): ReadonlyMap<string, FunctionInfo> {
     return this.functionCache;
   }
 
@@ -814,11 +828,16 @@ export class Indexer {
     return n;
   }
 
-  getVariablesInFile(file: string) {
+  getVariablesInFile(file: string): VariableEntry[] {
+    const keys = this._variableKeysByFile.get(file);
+    if (!keys) return [];
     const out: VariableEntry[] = [];
-    for (const [, arr] of this.variableCache) {
-      for (const v of arr) {
-        if (v.file === file) out.push(v);
+    for (const key of keys) {
+      const arr = this.variableCache.get(key);
+      if (arr) {
+        for (const v of arr) {
+          if (v.file === file) out.push(v);
+        }
       }
     }
     return out;

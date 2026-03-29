@@ -2,6 +2,18 @@ import * as vscode from "vscode";
 
 export const cfg = () => vscode.workspace.getConfiguration();
 
+const _regexCache = new Map<string, RegExp[]>();
+function compilePatterns(patterns: string[]): RegExp[] {
+  const key = JSON.stringify(patterns);
+  if (!_regexCache.has(key)) {
+    _regexCache.set(
+      key,
+      patterns.filter(Boolean).map((p) => new RegExp(p, "i")),
+    );
+  }
+  return _regexCache.get(key)!;
+}
+
 /**
  * Find workspace files matching a pattern.
  * Always bypasses files.exclude (passes null), then filters against
@@ -16,7 +28,7 @@ export async function findWorkspaceFiles(
   const patterns = cfg().get<string[]>("cicode.indexing.excludePatterns", []);
   if (!patterns.length) return all;
 
-  const regexes = patterns.filter(Boolean).map((p) => new RegExp(p, "i"));
+  const regexes = compilePatterns(patterns);
   return all.filter((uri) => {
     const rel = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
     return !regexes.some((re) => re.test(rel));
@@ -57,13 +69,13 @@ export function getLintConfig(
       true,
     ),
     warnInvalidTypes: c.get("cicode.diagnostics.warnInvalidTypes", true),
-    ignoredUndeclaredVariables: (
-      c.get("cicode.diagnostics.ignoredUndeclaredVariables", []) as string[]
-    ).map((v) => new RegExp(v, "i")),
+    ignoredUndeclaredVariables: compilePatterns(
+      c.get("cicode.diagnostics.ignoredUndeclaredVariables", []) as string[],
+    ),
     maxCallNestingDepth: c.get("cicode.lint.maxCallNestingDepth", 5),
     maxBlockNestingDepth: c.get("cicode.lint.maxBlockNestingDepth", 4),
-    ignoredFunctions: (
-      c.get("cicode.diagnostics.ignoredFunctions", []) as string[]
-    ).map((f) => new RegExp(f, "i")),
+    ignoredFunctions: compilePatterns(
+      c.get("cicode.diagnostics.ignoredFunctions", []) as string[],
+    ),
   };
 }

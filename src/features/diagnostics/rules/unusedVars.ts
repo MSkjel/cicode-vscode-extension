@@ -3,6 +3,7 @@ import type { Rule } from "../rule";
 import type { CheckContext } from "../context";
 import { hint } from "../diag";
 import { inSpan } from "../../../shared/textUtils";
+import { WORD_RE } from "../../../shared/constants";
 
 /**
  * Warns on unused local variables and unused function parameters.
@@ -45,7 +46,8 @@ export const unusedVarsRule: Rule = {
       }
 
       const counts = new Map<string, number>();
-      const wordRe = /\b[A-Za-z_]\w*\b/g;
+      WORD_RE.lastIndex = 0;
+      const wordRe = WORD_RE;
       let m: RegExpExecArray | null;
 
       while ((m = wordRe.exec(body))) {

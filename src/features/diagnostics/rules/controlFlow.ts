@@ -9,17 +9,19 @@ import { BLOCK_START_KEYWORDS } from "../../../shared/constants";
  * Searches forward from `startPos` for `keyword` respecting
  * parenthesis depth and stopping at statement boundaries.
  */
+const THEN_RE = /^THEN\b/i;
+const DO_RE = /^DO\b/i;
+
 function findKeywordAfter(
   text: string,
   ignoreNoHeaders: Array<[number, number]>,
   startPos: number,
-  keyword: string,
+  keywordRe: RegExp,
   maxRange: number,
 ): boolean {
   let searchPos = startPos;
   let parenDepth = 0;
   const maxSearch = Math.min(startPos + maxRange, text.length);
-  const keywordRe = new RegExp(`^${keyword}\\b`, "i");
 
   while (searchPos < maxSearch) {
     if (inSpan(searchPos, ignoreNoHeaders)) {
@@ -42,7 +44,7 @@ function findKeywordAfter(
     if (parenDepth === 0) {
       const prevChar = searchPos > 0 ? text[searchPos - 1] : " ";
       if (!/[A-Za-z0-9_]/.test(prevChar)) {
-        const slice = text.slice(searchPos, searchPos + keyword.length + 1);
+        const slice = text.slice(searchPos, searchPos + 10);
         if (keywordRe.test(slice)) return true;
 
         const wordMatch = /^([A-Za-z]+)\b/.exec(
@@ -88,7 +90,7 @@ export const controlFlowRule: Rule = {
       if (inSpan(m.index, ignore)) continue;
 
       if (
-        !findKeywordAfter(text, ignoreNoHeaders, m.index + 2, "THEN", 10000)
+        !findKeywordAfter(text, ignoreNoHeaders, m.index + 2, THEN_RE, 10000)
       ) {
         const pos = doc.positionAt(m.index);
         diags.push(
@@ -107,7 +109,7 @@ export const controlFlowRule: Rule = {
       if (inSpan(m.index, ignoreNoHeaders)) continue;
       if (inSpan(m.index, ignore)) continue;
 
-      if (!findKeywordAfter(text, ignoreNoHeaders, m.index + 5, "DO", 10000)) {
+      if (!findKeywordAfter(text, ignoreNoHeaders, m.index + 5, DO_RE, 10000)) {
         const pos = doc.positionAt(m.index);
         diags.push(
           diag(

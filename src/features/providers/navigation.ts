@@ -5,8 +5,12 @@ import {
   buildIgnoreSpans,
   inSpan,
   cleanParamName,
+  getSymbolAtPosition,
 } from "../../shared/textUtils";
-import { countArgsTopLevel } from "../../shared/parseHelpers";
+import {
+  countArgsTopLevel,
+  buildDefinitionOffsets,
+} from "../../shared/parseHelpers";
 import { KEYWORDS_WITH_PAREN } from "../../shared/constants";
 import { escapeRegExp, formatScopeType } from "../../shared/utils";
 import { findWorkspaceFiles } from "../../config";
@@ -21,9 +25,8 @@ export function makeNavProviders(
   return [
     vscode.languages.registerDefinitionProvider(lang, {
       provideDefinition(document, position) {
-        const wr = document.getWordRangeAtPosition(position, /\w+/);
-        if (!wr) return null;
-        const w = document.getText(wr);
+        const w = getSymbolAtPosition(document, position);
+        if (!w) return null;
         const f = indexer.getFunction(w);
         if (f?.location) return f.location;
         const v = indexer.resolveVariableAt(document, position, w);
@@ -33,10 +36,8 @@ export function makeNavProviders(
 
     vscode.languages.registerHoverProvider(lang, {
       provideHover(document, position) {
-        const wr = document.getWordRangeAtPosition(position, /\w+/);
-        if (!wr) return null;
-
-        const w = document.getText(wr);
+        const w = getSymbolAtPosition(document, position);
+        if (!w) return null;
         const entry = indexer.getFunction(w);
         if (entry) {
           const sig = `${entry.returnType} ${entry.name}(${(entry.params || []).join(", ")})`;
@@ -48,7 +49,7 @@ export function makeNavProviders(
           const showLink = vscode.workspace
             .getConfiguration("cicode")
             .get<boolean>("hover.showHelpLink", true);
-          const helpPath = (entry as any).helpPath as string | undefined;
+          const helpPath = entry.helpPath;
           if (showLink && helpPath) {
             const cmdUri = vscode.Uri.parse(
               `command:cicode.openHelpForSymbol?${encodeURIComponent(JSON.stringify(entry.name))}`,
@@ -82,9 +83,8 @@ export function makeNavProviders(
 
     vscode.languages.registerReferenceProvider(lang, {
       async provideReferences(document, position) {
-        const wr = document.getWordRangeAtPosition(position, /\w+/);
-        if (!wr) return [];
-        const word = document.getText(wr);
+        const word = getSymbolAtPosition(document, position);
+        if (!word) return [];
 
         const funcEntry = indexer.getFunction(word);
         const varEntry = indexer.resolveVariableAt(document, position, word);
@@ -93,15 +93,9 @@ export function makeNavProviders(
         if (funcEntry) {
           const cached = refCache.getReferences(word);
           if (cached && refCache.isReady) {
-            console.log(
-              `Cicode refs: cache hit for "${word}" (${cached.count} refs)`,
-            );
             return refCache.toLocations(cached.refs);
           }
-          // Fallback tolive scan
-          console.log(
-            `Cicode refs: live scan for "${word}" (cache ready: ${refCache.isReady}, cached: ${!!cached})`,
-          );
+          // Fallback to live scan
           return liveScanAllFiles(word);
         }
 
@@ -157,15 +151,10 @@ export function makeNavProviders(
           });
 
           // Build set of offsets where function names are defined
-          const defOffsets = new Set<number>();
-          for (const fr of indexer.getFunctionRanges(uri.fsPath)) {
-            let parenPos = text.indexOf("(", fr.headerIndex);
-            if (parenPos < 0) parenPos = fr.headerIndex;
-            const headerRegion = text.slice(fr.headerIndex, parenPos);
-            const nameRe = new RegExp(`\\b${escapeRegExp(fr.name)}\\b`, "i");
-            const nm = nameRe.exec(headerRegion);
-            if (nm) defOffsets.add(fr.headerIndex + nm.index);
-          }
+          const defOffsets = buildDefinitionOffsets(
+            text,
+            indexer.getFunctionRanges(uri.fsPath),
+          );
 
           const escaped = escapeRegExp(target);
           const re = new RegExp(`\\b${escaped}\\b`, "g");
@@ -205,9 +194,13 @@ export function makeNavProviders(
           const text = document.getText(
             new vscode.Range(new vscode.Position(0, 0), position),
           );
+          const ignoreSpans =
+            indexer.getIgnoreSpans(document.uri.fsPath) ??
+            buildIgnoreSpans(text, { includeFunctionHeaders: false });
           let depth = 0,
             funcPos = -1;
           for (let i = text.length - 1; i >= 0; i--) {
+            if (inSpan(i, ignoreSpans)) continue;
             const ch = text[i];
             if (ch === ")") depth++;
             else if (ch === "(") {
