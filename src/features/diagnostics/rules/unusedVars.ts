@@ -3,6 +3,7 @@ import type { Rule } from "../rule";
 import type { CheckContext } from "../context";
 import { hint } from "../diag";
 import { inSpan } from "../../../shared/textUtils";
+import { getFunctionBodyText } from "../../../shared/parseHelpers";
 import { WORD_RE } from "../../../shared/constants";
 
 /**
@@ -24,9 +25,7 @@ export const unusedVarsRule: Rule = {
     const diags: vscode.Diagnostic[] = [];
 
     for (const f of indexer.getFunctionRanges(doc.uri.fsPath)) {
-      const bodyStartAbs = doc.offsetAt(f.bodyRange.start);
-      const bodyEndAbs = doc.offsetAt(f.bodyRange.end);
-      const body = text.slice(bodyStartAbs, bodyEndAbs);
+      const { body, bodyStartAbs } = getFunctionBodyText(f, text, doc);
 
       const scopeId = indexer.localScopeId(doc.uri.fsPath, f.name);
       const localVars = indexer.getVariablesByPredicate(

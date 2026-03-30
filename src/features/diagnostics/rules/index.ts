@@ -16,6 +16,7 @@ import {
   callNestingRule,
   blockNestingRule,
 } from "./lint";
+import { invalidDeclarationsRule } from "./invalidDeclarations";
 
 /**
  * All registered diagnostic rules.
@@ -41,4 +42,5 @@ export const ALL_RULES: Rule[] = [
   magicNumbersRule,
   callNestingRule,
   blockNestingRule,
+  invalidDeclarationsRule,
 ];

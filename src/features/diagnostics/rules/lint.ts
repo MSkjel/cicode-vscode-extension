@@ -4,6 +4,10 @@ import type { CheckContext } from "../context";
 import { hint, info } from "../diag";
 import { inSpan, TYPE_RE, isCommentLine } from "../../../shared/textUtils";
 import {
+  getFunctionBodyText,
+  trackBlockDepth,
+} from "../../../shared/parseHelpers";
+import {
   BLOCK_OPENERS,
   BLOCK_START_KEYWORDS,
   STRUCTURAL_KEYWORDS,
@@ -26,7 +30,7 @@ const KEYWORD_CASE_RE = new RegExp(
 );
 
 const DECLARATION_LINE_RE = new RegExp(
-  `^\\s*(?:(?:GLOBAL|MODULE)\\s+)?(?:${[...CICODE_TYPES].join("|")})\\s+\\w+`,
+  `^\\s*(?:(?:GLOBAL|MODULE)\\s+)?(?:${[...CICODE_TYPES].join("|")})\\s+(?!FUNCTION\\b)\\w+`,
   "i",
 );
 const NUM_RE = /\b(\d+(?:\.\d+)?)\b/g;
@@ -148,12 +152,7 @@ export const keywordCaseRule: Rule = {
 export const magicNumbersRule: Rule = {
   id: "magicNumbers",
 
-  check({
-    doc,
-    text,
-    ignoreNoHeaders,
-    cfg,
-  }: CheckContext): vscode.Diagnostic[] {
+  check({ doc, ignoreNoHeaders, cfg }: CheckContext): vscode.Diagnostic[] {
     if (!cfg.enabled || !cfg.warnMagicNumbers) return [];
 
     const diags: vscode.Diagnostic[] = [];
@@ -282,11 +281,9 @@ export const blockNestingRule: Rule = {
     const diags: vscode.Diagnostic[] = [];
 
     for (const f of indexer.getFunctionRanges(doc.uri.fsPath)) {
-      const bodyStartAbs = doc.offsetAt(f.bodyRange.start);
-      const bodyEndAbs = doc.offsetAt(f.bodyRange.end);
-      const body = text.slice(bodyStartAbs, bodyEndAbs);
+      const { body, bodyStartAbs } = getFunctionBodyText(f, text, doc);
+      const blockState = { depth: 0, endLine: -1 };
 
-      let depth = 0;
       TOKEN_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
 
@@ -296,19 +293,21 @@ export const blockNestingRule: Rule = {
 
         const word = m[1].toUpperCase();
 
-        if (word === "END") {
-          if (depth > 0) depth--;
-        } else if (BLOCK_OPENERS.has(word)) {
-          depth++;
-          if (depth > cfg.maxBlockNestingDepth) {
-            const pos = doc.positionAt(absPos);
-            diags.push(
-              hint(
-                new vscode.Range(pos, pos.translate(0, m[1].length)),
-                `Block nested ${depth} levels deep (max ${cfg.maxBlockNestingDepth}).`,
-              ),
-            );
-          }
+        if (trackBlockDepth(word, absPos, doc, blockState) === "continue")
+          continue;
+
+        if (
+          word !== "END" &&
+          BLOCK_OPENERS.has(word) &&
+          blockState.depth > cfg.maxBlockNestingDepth
+        ) {
+          const pos = doc.positionAt(absPos);
+          diags.push(
+            hint(
+              new vscode.Range(pos, pos.translate(0, m[1].length)),
+              `Block nested ${blockState.depth} levels deep (max ${cfg.maxBlockNestingDepth}).`,
+            ),
+          );
         }
       }
     }

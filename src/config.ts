@@ -46,6 +46,7 @@ export interface LintConfig {
   warnUndeclaredVariables: boolean;
   warnInvalidTypes: boolean;
   ignoredUndeclaredVariables: RegExp[];
+  warnDeclarationsInBlocks: boolean;
   maxCallNestingDepth: number;
   maxBlockNestingDepth: number;
   ignoredFunctions: RegExp[];
@@ -71,6 +72,10 @@ export function getLintConfig(
     warnInvalidTypes: c.get("cicode.diagnostics.warnInvalidTypes", true),
     ignoredUndeclaredVariables: compilePatterns(
       c.get("cicode.diagnostics.ignoredUndeclaredVariables", []) as string[],
+    ),
+    warnDeclarationsInBlocks: c.get(
+      "cicode.diagnostics.warnDeclarationsInBlocks",
+      true,
     ),
     maxCallNestingDepth: c.get("cicode.lint.maxCallNestingDepth", 5),
     maxBlockNestingDepth: c.get("cicode.lint.maxBlockNestingDepth", 4),

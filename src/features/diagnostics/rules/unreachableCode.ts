@@ -3,6 +3,7 @@ import type { Rule } from "../rule";
 import type { CheckContext } from "../context";
 import { diag } from "../diag";
 import { inSpan } from "../../../shared/textUtils";
+import { getFunctionBodyText } from "../../../shared/parseHelpers";
 import {
   BLOCK_OPENERS,
   STRUCTURAL_KEYWORDS,
@@ -74,9 +75,7 @@ export const unreachableCodeRule: Rule = {
     const diags: vscode.Diagnostic[] = [];
 
     for (const f of indexer.getFunctionRanges(doc.uri.fsPath)) {
-      const bodyStartAbs = doc.offsetAt(f.bodyRange.start);
-      const bodyEndAbs = doc.offsetAt(f.bodyRange.end);
-      const body = text.slice(bodyStartAbs, bodyEndAbs);
+      const { body, bodyStartAbs } = getFunctionBodyText(f, text, doc);
 
       let depth = 0;
       let returnSeenAtDepthZero = false;
