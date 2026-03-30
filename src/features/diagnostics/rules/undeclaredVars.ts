@@ -3,6 +3,7 @@ import type { Rule } from "../rule";
 import type { CheckContext } from "../context";
 import { diag } from "../diag";
 import { inSpan } from "../../../shared/textUtils";
+import { getFunctionBodyText } from "../../../shared/parseHelpers";
 import {
   KEYWORDS_WITH_PAREN,
   CICODE_TYPES,
@@ -10,6 +11,7 @@ import {
   STRUCTURAL_KEYWORDS,
   STATEMENT_BOUNDARY_KEYWORDS,
   MISC_KEYWORDS,
+  TOKEN_RE,
 } from "../../../shared/constants";
 
 const SKIP_IDENTIFIERS = new Set([
@@ -40,11 +42,10 @@ export const undeclaredVarsRule: Rule = {
     const file = doc.uri.fsPath;
 
     for (const f of indexer.getFunctionRanges(file)) {
-      const bodyStartAbs = doc.offsetAt(f.bodyRange.start);
-      const bodyEndAbs = doc.offsetAt(f.bodyRange.end);
-      const body = text.slice(bodyStartAbs, bodyEndAbs);
+      const { body, bodyStartAbs } = getFunctionBodyText(f, text, doc);
 
-      const tokenRe = /\b([A-Za-z_]\w*)\b/g;
+      TOKEN_RE.lastIndex = 0;
+      const tokenRe = TOKEN_RE;
       let m: RegExpExecArray | null;
 
       while ((m = tokenRe.exec(body))) {

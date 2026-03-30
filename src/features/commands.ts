@@ -43,7 +43,7 @@ export function registerCommands(
           );
 
         const f = indexer.getAllFunctions().get(name.toLowerCase());
-        const helpFile = (f as any)?.helpPath as string | undefined;
+        const helpFile = f?.helpPath;
 
         if (!helpFile) {
           vscode.window.showInformationMessage(`No help page for '${name}'.`);

@@ -1,3 +1,8 @@
+import * as vscode from "vscode";
+import { escapeRegExp } from "./utils";
+import { BLOCK_OPENERS } from "./constants";
+import type { FunctionRange } from "../core/indexer/types";
+
 // =============================================================================
 // Span Utilities
 // =============================================================================
@@ -327,4 +332,73 @@ export function splitParamsTopLevel(raw: string): string[] {
   const last = raw.slice(start).trim();
   if (last) result.push(last);
   return result;
+}
+
+// =============================================================================
+// Definition Offset Utilities
+// =============================================================================
+
+/**
+ * Build the set of text offsets where function names are *defined* (not
+ * referenced). Used to exclude definition sites from reference/rename results.
+ */
+export function buildDefinitionOffsets(
+  text: string,
+  functionRanges: ReadonlyArray<{ name: string; headerIndex: number }>,
+): Set<number> {
+  const offsets = new Set<number>();
+  for (const fr of functionRanges) {
+    let parenPos = text.indexOf("(", fr.headerIndex);
+    if (parenPos < 0) parenPos = fr.headerIndex;
+    const headerRegion = text.slice(fr.headerIndex, parenPos);
+    const nameRe = new RegExp(`\\b${escapeRegExp(fr.name)}\\b`, "i");
+    const nm = nameRe.exec(headerRegion);
+    if (nm) offsets.add(fr.headerIndex + nm.index);
+  }
+  return offsets;
+}
+
+/**
+ * Returns the function body text and its absolute offsets within `text`.
+ * Eliminates the repeated 3-line boilerplate across diagnostic rules.
+ */
+export function getFunctionBodyText(
+  f: FunctionRange,
+  text: string,
+  doc: vscode.TextDocument,
+): { body: string; bodyStartAbs: number; bodyEndAbs: number } {
+  const bodyStartAbs = doc.offsetAt(f.bodyRange.start);
+  const bodyEndAbs = doc.offsetAt(f.bodyRange.end);
+  return {
+    body: text.slice(bodyStartAbs, bodyEndAbs),
+    bodyStartAbs,
+    bodyEndAbs,
+  };
+}
+
+/**
+ * Maintains block nesting depth while TOKEN_RE iterates a function body.
+ * Handles `END SELECT` / `END IF` / `END FOR` / `END WHILE` by skipping the
+ * trailing keyword when it appears on the same line as END.
+ *
+ * Mutates `state.depth` and `state.endLine` in place.
+ * Returns `"continue"` when the caller should skip the current token.
+ */
+export function trackBlockDepth(
+  word: string,
+  absPos: number,
+  doc: vscode.TextDocument,
+  state: { depth: number; endLine: number },
+): "continue" | void {
+  if (state.endLine !== -1) {
+    const sameLine = doc.positionAt(absPos).line === state.endLine;
+    state.endLine = -1;
+    if (sameLine && BLOCK_OPENERS.has(word)) return "continue";
+  }
+  if (word === "END") {
+    state.endLine = doc.positionAt(absPos).line;
+    if (state.depth > 0) state.depth--;
+  } else if (BLOCK_OPENERS.has(word)) {
+    state.depth++;
+  }
 }

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
+import type { ScopeType } from "../../shared/types";
 import { isInCommentOrString, leftWordRangeAt } from "../../shared/textUtils";
 import { CICODE_TYPES_PATTERN } from "../../shared/constants";
 import { formatScopeType } from "../../shared/utils";
@@ -286,13 +287,13 @@ export function makeCompletion(
         const pushVar = (v: {
           name: string;
           type: string;
-          scopeType: string;
+          scopeType: ScopeType;
           scopeId: string;
         }) => {
           const k = `${v.name}|${v.scopeType}|${v.scopeId}`;
           if (seen.has(k)) return;
           seen.add(k);
-          const detail = formatScopeType(v.scopeType as any, {
+          const detail = formatScopeType(v.scopeType, {
             includeType: true,
             type: v.type,
           });

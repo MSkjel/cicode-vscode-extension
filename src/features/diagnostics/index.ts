@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
-import { buildIgnoreSpans } from "../../shared/textUtils";
+import { buildBothIgnoreSpans } from "../../shared/textUtils";
 import { getLintConfig, findWorkspaceFiles } from "../../config";
-import { isCicodeDocument } from "../../shared/utils";
+import { isCicodeDocument, error } from "../../shared/utils";
 import type { CheckContext } from "./context";
 import { ALL_RULES } from "./rules/index";
 
@@ -21,13 +21,12 @@ export function registerDiagnostics(
       const text = doc.getText();
       const lintCfg = getLintConfig(cfg);
 
+      const { ignore, ignoreNoHeaders } = buildBothIgnoreSpans(text);
       const ctx: CheckContext = {
         doc,
         text,
-        ignore: buildIgnoreSpans(text),
-        ignoreNoHeaders: buildIgnoreSpans(text, {
-          includeFunctionHeaders: false,
-        }),
+        ignore,
+        ignoreNoHeaders,
         indexer,
         cfg: lintCfg,
         ignoredFuncs: lintCfg.ignoredFunctions,
@@ -37,7 +36,7 @@ export function registerDiagnostics(
       const diags = ALL_RULES.flatMap((rule) => rule.check(ctx));
       coll.set(doc.uri, diags);
     } catch (err) {
-      console.error("cicode diagnostics failed", err);
+      error("cicode diagnostics failed", err);
     }
   }
 

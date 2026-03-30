@@ -10,4 +10,7 @@ export interface FunctionRange {
   startOffset: number;
   endOffset: number;
   bodyRange: vscode.Range;
+  docText?: string;
+  paramDocs?: Record<string, string>;
+  returnsDoc?: string;
 }

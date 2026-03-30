@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
+import { buildIgnoreSpans, inSpan } from "../../shared/textUtils";
+import { CALL_RE } from "../../shared/constants";
 
 export function makeSemanticTokens(indexer: Indexer): {
   provider: vscode.DocumentSemanticTokensProvider;
@@ -37,11 +39,15 @@ export function makeSemanticTokens(indexer: Indexer): {
         builder.push(f.location.range, "function", []);
       }
 
-      // Highlight builtin function calls
+      // Highlight builtin function calls — skip matches inside comments/strings
       const builtins = getBuiltinNames();
-      const callRe = /\b([A-Za-z_]\w*)\s*\(/g;
+      const ignore =
+        indexer.getIgnoreSpans(doc.uri.fsPath) ??
+        buildIgnoreSpans(text, { includeFunctionHeaders: false });
+      CALL_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
-      while ((m = callRe.exec(text))) {
+      while ((m = CALL_RE.exec(text))) {
+        if (inSpan(m.index, ignore)) continue;
         const name = m[1];
         if (builtins.has(name.toLowerCase())) {
           const pos = doc.positionAt(m.index);

@@ -43,12 +43,10 @@ export function makeFormatter(
         }
       }
     }
-    const idx =
-      slashIdx >= 0 && bangIdx >= 0
-        ? Math.min(slashIdx, bangIdx)
-        : slashIdx >= 0
-          ? slashIdx
-          : bangIdx;
+    // Handle | pipe comments
+    const pipeIdx = s.indexOf("|");
+    const candidates = [slashIdx, bangIdx, pipeIdx].filter((i) => i >= 0);
+    const idx = candidates.length ? Math.min(...candidates) : -1;
     return idx >= 0 ? s.slice(0, idx) : s;
   }
 
@@ -82,9 +80,9 @@ export function makeFormatter(
         }
       }
     }
-    if (slashIdx >= 0 && bangIdx >= 0) return Math.min(slashIdx, bangIdx);
-    if (slashIdx >= 0) return slashIdx;
-    return bangIdx;
+    const pipeIdx = s.indexOf("|");
+    const candidates = [slashIdx, bangIdx, pipeIdx].filter((i) => i >= 0);
+    return candidates.length ? Math.min(...candidates) : -1;
   }
 
   function normalizeOutsideParens(line: string) {

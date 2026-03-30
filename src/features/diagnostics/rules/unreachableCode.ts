@@ -3,7 +3,12 @@ import type { Rule } from "../rule";
 import type { CheckContext } from "../context";
 import { diag } from "../diag";
 import { inSpan } from "../../../shared/textUtils";
-import { BLOCK_OPENERS, STRUCTURAL_KEYWORDS } from "../../../shared/constants";
+import { getFunctionBodyText } from "../../../shared/parseHelpers";
+import {
+  BLOCK_OPENERS,
+  STRUCTURAL_KEYWORDS,
+  TOKEN_RE,
+} from "../../../shared/constants";
 
 /**
  * Returns the position in `body` just after the RETURN statement starting at
@@ -70,14 +75,13 @@ export const unreachableCodeRule: Rule = {
     const diags: vscode.Diagnostic[] = [];
 
     for (const f of indexer.getFunctionRanges(doc.uri.fsPath)) {
-      const bodyStartAbs = doc.offsetAt(f.bodyRange.start);
-      const bodyEndAbs = doc.offsetAt(f.bodyRange.end);
-      const body = text.slice(bodyStartAbs, bodyEndAbs);
+      const { body, bodyStartAbs } = getFunctionBodyText(f, text, doc);
 
       let depth = 0;
       let returnSeenAtDepthZero = false;
 
-      const tokenRe = /\b([A-Za-z_]\w*)\b/g;
+      TOKEN_RE.lastIndex = 0;
+      const tokenRe = TOKEN_RE;
       let m: RegExpExecArray | null;
 
       while ((m = tokenRe.exec(body))) {

@@ -10,6 +10,7 @@ import {
   findMatchingParen,
   sliceTopLevelArgSpans,
 } from "../../shared/parseHelpers";
+import { CALL_RE } from "../../shared/constants";
 
 export function makeInlay(indexer: Indexer): vscode.InlayHintsProvider {
   return {
@@ -17,10 +18,10 @@ export function makeInlay(indexer: Indexer): vscode.InlayHintsProvider {
       const out: vscode.InlayHint[] = [];
       const full = doc.getText();
       const ignore = buildIgnoreSpans(full);
-      const re = /\b([A-Za-z_]\w*)\s*\(/g;
+      CALL_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
 
-      while ((m = re.exec(full))) {
+      while ((m = CALL_RE.exec(full))) {
         const name = m[1];
         const openAbs = m.index + m[0].lastIndexOf("(");
         if (inSpan(openAbs, ignore)) continue;

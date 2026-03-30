@@ -4,6 +4,7 @@ import type { CheckContext } from "../context";
 import { diag } from "../diag";
 import { inSpan, stripLineComment } from "../../../shared/textUtils";
 import { CONTROL_KEYWORDS } from "../../../shared/constants";
+import { getFunctionBodyText } from "../../../shared/parseHelpers";
 
 /**
  * Validates return statements:
@@ -32,9 +33,7 @@ export const returnTypeRule: Rule = {
         "VOID"
       ).toUpperCase();
 
-      const bodyStartAbs = doc.offsetAt(f.bodyRange.start);
-      const bodyEndAbs = doc.offsetAt(f.bodyRange.end);
-      const body = text.slice(bodyStartAbs, bodyEndAbs);
+      const { body, bodyStartAbs } = getFunctionBodyText(f, text, doc);
 
       let hasReturnWithValue = false;
       const retRe = /\bRETURN\b/gi;

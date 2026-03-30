@@ -1,18 +1,23 @@
 import * as vscode from "vscode";
 import * as path from "path";
+import * as fs from "fs";
 import { cfg } from "./config";
-import { initBuiltins, rebuildBuiltins } from "./core/builtins/builtins";
+import {
+  initBuiltins,
+  rebuildBuiltins,
+  clearPathCache,
+} from "./core/builtins/builtins";
 import { Indexer } from "./core/indexer/indexer";
 import { registerProviders } from "./features/providers";
 import { registerCommands } from "./features/commands";
 import { makeStatusBar } from "./features/statusBar";
 import { makeSideBar } from "./features/sideBar";
+import { log, error } from "./shared/utils";
 
 let indexer: Indexer | undefined;
 
 export async function activate(context: vscode.ExtensionContext) {
   try {
-    console.log("Cicode extension active!");
     await initBuiltins(context, cfg);
 
     indexer = new Indexer(context, cfg);
@@ -27,7 +32,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const adapterExe = context.asAbsolutePath(
       path.join("dap", "cicode-debug-adapter.exe"),
     );
-    if (!require("fs").existsSync(adapterExe)) {
+    if (!fs.existsSync(adapterExe)) {
       vscode.window.showWarningMessage(
         `Cicode: debug adapter not found at ${adapterExe}. Run 'build.cmd' in the dap/ folder to build it.`,
       );
@@ -118,14 +123,28 @@ export async function activate(context: vscode.ExtensionContext) {
       }),
     );
 
+    // Invalidate builtin path cache when AVEVA path changes so the next help
+    // lookup resolves fresh paths instead of serving stale ones.
+    disposables.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration("cicode.avevaPath")) {
+          clearPathCache();
+        }
+      }),
+    );
+
     context.subscriptions.push(...disposables);
 
-    // Build index in the background — providers handle the "not yet ready" state
-    indexer.buildAll().catch((err) => {
-      console.error("Cicode: Failed to build index:", err);
-    });
+    // Build index in the background. Providers handle the "not yet ready" state
+    const t0 = Date.now();
+    indexer
+      .buildAll()
+      .then(() => log(`index built in ${Date.now() - t0}ms`))
+      .catch((err) => {
+        error("Cicode: Failed to build index:", err);
+      });
   } catch (err) {
-    console.error("Cicode extension activation failed:", err);
+    error("Cicode extension activation failed:", err);
     vscode.window.showErrorMessage(
       `Cicode extension failed to activate: ${err instanceof Error ? err.message : String(err)}`,
     );

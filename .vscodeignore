@@ -9,6 +9,9 @@ logs/
 dap/**
 !dap/cicode-debug-adapter.exe
 
+# Exclude the scripts folder
+scripts/
+
 # Exclude config and build files
 .gitignore
 .vscode/

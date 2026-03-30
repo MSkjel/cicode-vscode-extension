@@ -2,13 +2,18 @@ import * as vscode from "vscode";
 import type { Rule } from "../rule";
 import type { CheckContext } from "../context";
 import { hint, info } from "../diag";
-import { inSpan, TYPE_RE } from "../../../shared/textUtils";
+import { inSpan, TYPE_RE, isCommentLine } from "../../../shared/textUtils";
+import {
+  getFunctionBodyText,
+  trackBlockDepth,
+} from "../../../shared/parseHelpers";
 import {
   BLOCK_OPENERS,
   BLOCK_START_KEYWORDS,
   STRUCTURAL_KEYWORDS,
   STATEMENT_BOUNDARY_KEYWORDS,
   CICODE_TYPES,
+  TOKEN_RE,
 } from "../../../shared/constants";
 
 const KEYWORD_CASE_RE = new RegExp(
@@ -25,12 +30,11 @@ const KEYWORD_CASE_RE = new RegExp(
 );
 
 const DECLARATION_LINE_RE = new RegExp(
-  `^\\s*(?:(?:GLOBAL|MODULE)\\s+)?(?:${[...CICODE_TYPES].join("|")})\\s+\\w+`,
+  `^\\s*(?:(?:GLOBAL|MODULE)\\s+)?(?:${[...CICODE_TYPES].join("|")})\\s+(?!FUNCTION\\b)\\w+`,
   "i",
 );
 const NUM_RE = /\b(\d+(?:\.\d+)?)\b/g;
 const ARRAY_INDEX_RE = /\[\s*\d+\s*\]/;
-const TOKEN_RE = /\b([A-Za-z_]\w*)\b/g;
 
 /** Warn when lines exceed the configured maximum length. */
 export const lineLengthRule: Rule = {
@@ -43,7 +47,7 @@ export const lineLengthRule: Rule = {
     for (let i = 0; i < doc.lineCount; i++) {
       const L = doc.lineAt(i);
       const s = L.text;
-      if (/^\s*(\/\/|!)/.test(s.trim())) continue;
+      if (isCommentLine(s)) continue;
       if (s.length > cfg.maxLineLength) {
         diags.push(
           hint(
@@ -95,7 +99,7 @@ export const missingSemicolonRule: Rule = {
     for (let i = 0; i < doc.lineCount; i++) {
       const L = doc.lineAt(i);
       const s = L.text;
-      if (/^\s*(\/\/|!)/.test(s.trim())) continue;
+      if (isCommentLine(s)) continue;
 
       if (/^\s*((?:GLOBAL|MODULE)\s+)?(\w+)\s+\w+(\s*,\s*\w+)*\s*$/i.test(s)) {
         const typeWord =
@@ -148,19 +152,14 @@ export const keywordCaseRule: Rule = {
 export const magicNumbersRule: Rule = {
   id: "magicNumbers",
 
-  check({
-    doc,
-    text,
-    ignoreNoHeaders,
-    cfg,
-  }: CheckContext): vscode.Diagnostic[] {
+  check({ doc, ignoreNoHeaders, cfg }: CheckContext): vscode.Diagnostic[] {
     if (!cfg.enabled || !cfg.warnMagicNumbers) return [];
 
     const diags: vscode.Diagnostic[] = [];
     for (let i = 0; i < doc.lineCount; i++) {
       const L = doc.lineAt(i);
       const s = L.text;
-      if (/^\s*(\/\/|!)/.test(s.trim())) continue;
+      if (isCommentLine(s)) continue;
 
       const isDeclarationLine = DECLARATION_LINE_RE.test(s);
       if (isDeclarationLine) continue;
@@ -282,11 +281,9 @@ export const blockNestingRule: Rule = {
     const diags: vscode.Diagnostic[] = [];
 
     for (const f of indexer.getFunctionRanges(doc.uri.fsPath)) {
-      const bodyStartAbs = doc.offsetAt(f.bodyRange.start);
-      const bodyEndAbs = doc.offsetAt(f.bodyRange.end);
-      const body = text.slice(bodyStartAbs, bodyEndAbs);
+      const { body, bodyStartAbs } = getFunctionBodyText(f, text, doc);
+      const blockState = { depth: 0, endLine: -1 };
 
-      let depth = 0;
       TOKEN_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
 
@@ -296,19 +293,21 @@ export const blockNestingRule: Rule = {
 
         const word = m[1].toUpperCase();
 
-        if (word === "END") {
-          if (depth > 0) depth--;
-        } else if (BLOCK_OPENERS.has(word)) {
-          depth++;
-          if (depth > cfg.maxBlockNestingDepth) {
-            const pos = doc.positionAt(absPos);
-            diags.push(
-              hint(
-                new vscode.Range(pos, pos.translate(0, m[1].length)),
-                `Block nested ${depth} levels deep (max ${cfg.maxBlockNestingDepth}).`,
-              ),
-            );
-          }
+        if (trackBlockDepth(word, absPos, doc, blockState) === "continue")
+          continue;
+
+        if (
+          word !== "END" &&
+          BLOCK_OPENERS.has(word) &&
+          blockState.depth > cfg.maxBlockNestingDepth
+        ) {
+          const pos = doc.positionAt(absPos);
+          diags.push(
+            hint(
+              new vscode.Range(pos, pos.translate(0, m[1].length)),
+              `Block nested ${blockState.depth} levels deep (max ${cfg.maxBlockNestingDepth}).`,
+            ),
+          );
         }
       }
     }

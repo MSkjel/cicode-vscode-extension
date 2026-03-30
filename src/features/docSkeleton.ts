@@ -4,8 +4,8 @@ import { cleanParamName } from "../shared/textUtils";
 import { cfg } from "../config";
 
 interface DocSkeletonConfig {
-  useBlockComment: Boolean; // Whether block comments (/** ... */) or if single line comments (///) are used for the doc skeleton
-  useXMLDoxygenCommands: Boolean; // Whether regular doxygen speceial commands (@ and /), or if doxygen XML tags are used by the doc skeleton
+  useBlockComment: boolean; // Whether block comments (/** ... */) or if single line comments (///) are used for the doc skeleton
+  useXMLDoxygenCommands: boolean; // Whether regular doxygen speceial commands (@ and /), or if doxygen XML tags are used by the doc skeleton
   nonXMLCommandChar: string; // if the non xml doxygen should use @ or /
 }
 function getDocstringFormat(): DocSkeletonConfig {
@@ -15,16 +15,12 @@ function getDocstringFormat(): DocSkeletonConfig {
       c.get(
         "cicode.documentation.docskeleton.useBlockComment",
         "Block comment",
-      ) === "Block comment"
-        ? true
-        : false,
+      ) === "Block comment",
     useXMLDoxygenCommands:
       c.get<string>(
         "cicode.documentation.docskeleton.doxygenStyle",
         "Javadoc style (@)",
-      ) === "XML Doxygen commands"
-        ? true
-        : false,
+      ) === "XML Doxygen commands",
     nonXMLCommandChar:
       c.get(
         "cicode.documentation.docskeleton.doxygenStyle",
@@ -47,14 +43,14 @@ function getDocstringFormat(): DocSkeletonConfig {
  * @param insertEmptyLineAtBeginning - if an empty line with leading char should be inserted at the beginning
  */
 function insertXmlOrDoxygenTag(
-  useXML: Boolean,
+  useXML: boolean,
   tagName: string,
   leadingCharacters: string = "",
-  splitOverMultiLines: Boolean = false,
+  splitOverMultiLines: boolean = false,
   xmlAttribute: string = "",
-  includeTagNameInTodo: Boolean = true,
-  insertEmptyLineAtEnd: Boolean = false,
-  insertEmptyLineAtBeginning: Boolean = false,
+  includeTagNameInTodo: boolean = true,
+  insertEmptyLineAtEnd: boolean = false,
+  insertEmptyLineAtBeginning: boolean = false,
   doxygenLeadingChar: string = "@",
 ): string[] {
   const line: string[] = [];

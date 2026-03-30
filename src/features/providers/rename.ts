@@ -1,6 +1,23 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
 import type { ReferenceCache } from "../../core/referenceCache";
+import { getSymbolAtPosition } from "../../shared/textUtils";
+
+function addDefinition(
+  indexer: Indexer,
+  edit: vscode.WorkspaceEdit,
+  word: string,
+  newName: string,
+): void {
+  const entry = indexer.getFunction(word);
+  if (!entry?.location) return;
+  const start = entry.location.range.start;
+  edit.replace(
+    entry.location.uri,
+    new vscode.Range(start, start.translate(0, word.length)),
+    newName,
+  );
+}
 
 export function makeRename(
   indexer: Indexer,
@@ -11,10 +28,8 @@ export function makeRename(
       return doc.getWordRangeAtPosition(pos, /\w+/) || null;
     },
     async provideRenameEdits(doc, pos, newName) {
-      const wordRange = doc.getWordRangeAtPosition(pos, /\w+/);
-      if (!wordRange) return null;
-
-      const word = doc.getText(wordRange);
+      const word = getSymbolAtPosition(doc, pos);
+      if (!word) return null;
       const edit = new vscode.WorkspaceEdit();
 
       // Try to use cached references for functions (much faster)
@@ -24,6 +39,7 @@ export function makeRename(
           const locations = await refCache.toLocations(cached.refs);
           for (const loc of locations)
             edit.replace(loc.uri, loc.range, newName);
+          addDefinition(indexer, edit, word, newName);
           return edit;
         }
       }
@@ -35,6 +51,7 @@ export function makeRename(
         pos,
       );
       for (const loc of refs || []) edit.replace(loc.uri, loc.range, newName);
+      addDefinition(indexer, edit, word, newName);
       return edit;
     },
   };

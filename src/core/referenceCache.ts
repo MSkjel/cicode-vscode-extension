@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import type { Indexer } from "./indexer/indexer";
 import { buildIgnoreSpans, inSpan } from "../shared/textUtils";
+import { WORD_RE } from "../shared/constants";
+import { buildDefinitionOffsets } from "../shared/parseHelpers";
 import { debounce } from "../shared/utils";
 import { findWorkspaceFiles } from "../config";
 
@@ -226,9 +228,9 @@ export class ReferenceCache implements vscode.Disposable {
 
     // Detect newly added / removed functions
     const currentFunctions = this._collectFunctionNames();
-    const newSymbols: string[] = [];
+    const newSymbols = new Set<string>();
     for (const fn of currentFunctions) {
-      if (!this._knownFunctions.has(fn)) newSymbols.push(fn);
+      if (!this._knownFunctions.has(fn)) newSymbols.add(fn);
     }
     // Remove symbols that no longer exist
     for (const sym of this._knownFunctions) {
@@ -245,13 +247,12 @@ export class ReferenceCache implements vscode.Disposable {
     }
 
     // For newly added function names, scan ALL files
-    if (newSymbols.length > 0) {
-      const newSet = new Set(newSymbols);
+    if (newSymbols.size > 0) {
       const allFiles = await findWorkspaceFiles("**/*.ci", this.cfg);
       for (const uri of allFiles) {
         if (this._buildVersion !== version) return;
         if (uri.fsPath === changedFile) continue;
-        await this._scanFile(uri, newSet);
+        await this._scanFile(uri, newSymbols);
       }
     }
 
@@ -272,45 +273,29 @@ export class ReferenceCache implements vscode.Disposable {
     let text: string;
     let ignore: Array<[number, number]> | undefined;
 
-    // Try to use cached ignore spans from the indexer (much faster)
-    ignore = this.indexer.getIgnoreSpans(file);
-    if (ignore) {
-      // Indexer has processed this file — use raw fs read
-      try {
-        const bytes = await vscode.workspace.fs.readFile(uri);
-        text = new TextDecoder().decode(bytes);
-      } catch {
-        return;
-      }
-    } else {
-      // Fallback: file not yet indexed, use openTextDocument + compute spans
-      try {
-        const doc = await vscode.workspace.openTextDocument(uri);
-        text = doc.getText();
-      } catch {
-        return;
-      }
-      ignore = buildIgnoreSpans(text, { includeFunctionHeaders: false });
+    try {
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      text = new TextDecoder().decode(bytes);
+    } catch {
+      return;
     }
+    // Try to use cached ignore spans from the indexer (much faster)
+    ignore =
+      this.indexer.getIgnoreSpans(file) ??
+      buildIgnoreSpans(text, { includeFunctionHeaders: false });
 
     // Build set of offsets where function names are defined (not referenced)
-    const defOffsets = new Set<number>();
-    for (const fr of this.indexer.getFunctionRanges(file)) {
-      // Header region ends at the opening paren (name is always before it)
-      let parenPos = text.indexOf("(", fr.headerIndex);
-      if (parenPos < 0) parenPos = fr.headerIndex;
-      const headerRegion = text.slice(fr.headerIndex, parenPos);
-      const nameRe = new RegExp(`\\b${fr.name}\\b`, "i");
-      const nm = nameRe.exec(headerRegion);
-      if (nm) defOffsets.add(fr.headerIndex + nm.index);
-    }
+    const defOffsets = buildDefinitionOffsets(
+      text,
+      this.indexer.getFunctionRanges(file),
+    );
 
     const symbolsFoundInFile = new Set<string>();
 
-    const wordRe = /\b[A-Za-z_]\w*\b/g;
+    WORD_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
 
-    while ((m = wordRe.exec(text))) {
+    while ((m = WORD_RE.exec(text))) {
       const key = m[0].toLowerCase();
       if (!functionNames.has(key)) continue;
       if (inSpan(m.index, ignore)) continue;
@@ -382,7 +367,7 @@ export class ReferenceCache implements vscode.Disposable {
   /** Collect the lowercase names of all user-defined functions from the indexer. */
   private _collectFunctionNames(): Set<string> {
     const names = new Set<string>();
-    for (const [key, info] of this.indexer.getAllFunctions()) {
+    for (const [key] of this.indexer.getAllFunctions()) {
       names.add(key);
     }
     return names;

@@ -19,6 +19,8 @@ export function readDbfHeader(buf: Buffer): DbfHeader | null {
   const headerSize = buf.readUInt16LE(8);
   const recordSize = buf.readUInt16LE(10);
 
+  if (recordSize === 0 || headerSize < 32) return null;
+
   const fields: DbfField[] = [];
   let offset = 32;
   while (
