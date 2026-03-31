@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { BLOCK_OPENER_RE } from "../../shared/constants";
 
 export function makeFormatter(
   cfg: () => vscode.WorkspaceConfiguration,
@@ -8,8 +9,6 @@ export function makeFormatter(
     /^\s*if\b/i,
     /^\s*for\b/i,
     /^\s*while\b/i,
-    /^\s*try\b/i,
-    /^\s*repeat\b/i,
     /^\s*select\s+case\b/i,
   ];
   const MIDDLES: RegExp[] = [
@@ -25,28 +24,12 @@ export function makeFormatter(
   ];
   const isAny = (line: string, patterns: RegExp[]) =>
     patterns.some((re) => re.test(line));
+  const SELECT_CASE_RE = /^\s*select\s+case\b/i;
+  const CASE_LINE_RE = /^\s*case\b/i;
+  const END_SELECT_RE = /^\s*end\s+select\b/i;
 
-  function stripLineCommentOnce(s: string) {
-    // Handle // comments
-    const slashIdx = s.indexOf("//");
-    // Handle ! comments - only valid at line start or after whitespace/punctuation
-    // Must check it's not part of != operator
-    let bangIdx = -1;
-    for (let i = 0; i < s.length; i++) {
-      if (s[i] === "!") {
-        // Check if this is != operator
-        if (i + 1 < s.length && s[i + 1] === "=") continue;
-        // Check if preceded by whitespace, punctuation, or start of string
-        if (i === 0 || /[\s,;:()[\]{}]/.test(s[i - 1])) {
-          bangIdx = i;
-          break;
-        }
-      }
-    }
-    // Handle | pipe comments
-    const pipeIdx = s.indexOf("|");
-    const candidates = [slashIdx, bangIdx, pipeIdx].filter((i) => i >= 0);
-    const idx = candidates.length ? Math.min(...candidates) : -1;
+  function stripLineCommentOnce(s: string): string {
+    const idx = findCommentStart(s);
     return idx >= 0 ? s.slice(0, idx) : s;
   }
 
@@ -157,6 +140,9 @@ export function makeFormatter(
       let blankCount = 0;
       // Track SELECT CASE blocks: each entry = whether a CASE is currently open
       const selectStack: boolean[] = [];
+      // When FUNCTION keyword appears alone (no name on same line), the next real
+      // line is the function name/signature and should print at depth-1.
+      let functionNamePending = false;
 
       for (let i = 0; i < doc.lineCount; i++) {
         let raw = doc.lineAt(i).text;
@@ -190,10 +176,20 @@ export function makeFormatter(
           continue;
         }
 
+        // Function name is on its own line (FUNCTION keyword was alone on previous line)
+        if (functionNamePending) {
+          functionNamePending = false;
+          const normalized = normalizeOutsideParens(line).trim();
+          const indent = "\t".repeat(Math.max(0, depth - 1));
+          out.push(normalized.length ? indent + normalized : "");
+          parenBalance += delta;
+          continue;
+        }
+
         // Detect SELECT CASE related patterns
-        const isSelectCase = /^\s*select\s+case\b/i.test(trimmed);
-        const isCaseLine = /^\s*case\b/i.test(trimmed) && !isSelectCase;
-        const isEndSelect = /^\s*end\s+select\b/i.test(trimmed);
+        const isSelectCase = SELECT_CASE_RE.test(trimmed);
+        const isCaseLine = CASE_LINE_RE.test(trimmed) && !isSelectCase;
+        const isEndSelect = END_SELECT_RE.test(trimmed);
 
         // Handle CASE: close previous CASE block if one is open
         if (
@@ -227,7 +223,24 @@ export function makeFormatter(
         const rebuilt = normalized.length ? indent + normalized : "";
         out.push(rebuilt);
 
-        if (isOpener && !isCloser) depth++;
+        if (isOpener && !isCloser) {
+          // Count net block depth change on this line so that single-line blocks
+          // like "IF ... THEN foo; END" don't permanently increase depth.
+          const lineCode = stripLineCommentOnce(trimmed);
+          BLOCK_OPENER_RE.lastIndex = 0;
+          const opens = (lineCode.match(BLOCK_OPENER_RE) || []).length;
+          const closes = (lineCode.match(/\bEND\b/gi) || []).length;
+          if (opens > closes) {
+            depth += opens - closes;
+            // FUNCTION alone on the line, next line is the signature
+            if (
+              /\bfunction\b/i.test(lineCode) &&
+              !/\bfunction\s+\w+/i.test(lineCode)
+            ) {
+              functionNamePending = true;
+            }
+          }
+        }
 
         // Track SELECT CASE state
         if (isSelectCase) {

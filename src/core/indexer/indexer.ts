@@ -1,6 +1,15 @@
 import * as vscode from "vscode";
 import { debounce, error } from "../../shared/utils";
 import { CICODE_TYPES_PATTERN } from "../../shared/constants";
+
+const RETURN_TYPE_SAME_LINE_RE = new RegExp(
+  `\\b(${CICODE_TYPES_PATTERN})\\s*$`,
+  "i",
+);
+const RETURN_TYPE_PREV_LINE_RE = new RegExp(
+  `^(?:(?:private|public|global|module|const|static)\\s+)*(${CICODE_TYPES_PATTERN})\\s*$`,
+  "i",
+);
 import {
   TYPE_RE,
   splitDeclNames,
@@ -23,15 +32,34 @@ import { findWorkspaceFiles } from "../../config";
  * Indexes Cicode files to extract function definitions, variable declarations,
  * and their locations for use by other language features.
  */
+class FileIgnoreSpans {
+  private _withHeaders?: Array<[number, number]>;
+
+  constructor(
+    readonly withoutHeaders: Array<[number, number]>,
+    private readonly _headerSpans: Array<[number, number]>,
+  ) {}
+
+  get withHeaders(): Array<[number, number]> {
+    return (this._withHeaders ??= [
+      ...this.withoutHeaders,
+      ...this._headerSpans,
+    ].sort((a, b) => a[0] - b[0]));
+  }
+
+  get(
+    opts: { includeFunctionHeaders?: boolean } = {},
+  ): Array<[number, number]> {
+    return opts.includeFunctionHeaders ? this.withHeaders : this.withoutHeaders;
+  }
+}
+
 export class Indexer {
   private readonly functionCache = new Map<string, FunctionInfo>();
   readonly variableCache = new Map<string, VariableEntry[]>();
   readonly labelCache = new Map<string, LabelRecord>(); // label name (lower) → record
   private readonly functionRangesByFile = new Map<string, FunctionRange[]>();
-  private readonly _ignoreSpansByFile = new Map<
-    string,
-    Array<[number, number]>
-  >();
+  private readonly _ignoreSpansByFile = new Map<string, FileIgnoreSpans>();
 
   // Reverse indexes for O(1) file purge instead of O(n) iteration
   private readonly _functionKeysByFile = new Map<string, Set<string>>();
@@ -346,12 +374,16 @@ export class Indexer {
     this._purgeFile(file, false);
 
     const text = doc.getText();
-    const ignoreSpans = buildIgnoreSpans(text, {
-      includeFunctionHeaders: false,
-    });
-    this._ignoreSpansByFile.set(file, ignoreSpans);
+    const base = buildIgnoreSpans(text, { includeFunctionHeaders: false });
 
-    const functions = this._extractFunctionsWithRanges(text, doc, ignoreSpans);
+    const functions = this._extractFunctionsWithRanges(text, doc, base);
+
+    // Derive header spans from the already-extracted functions
+    const headerSpans: Array<[number, number]> = functions.map((f) => [
+      f.headerIndex,
+      f.startOffset,
+    ]);
+    this._ignoreSpansByFile.set(file, new FileIgnoreSpans(base, headerSpans));
     this.functionRangesByFile.set(file, functions);
 
     for (const f of functions) {
@@ -501,10 +533,7 @@ export class Indexer {
 
       // Check for type on same line: "INT FUNCTION foo()"
       const lastLine = beforeLines[beforeLines.length - 1] || "";
-      const sameLineMatch = new RegExp(
-        `\\b(${CICODE_TYPES_PATTERN})\\s*$`,
-        "i",
-      ).exec(lastLine);
+      const sameLineMatch = RETURN_TYPE_SAME_LINE_RE.exec(lastLine);
 
       if (sameLineMatch) {
         returnType = sameLineMatch[1].toUpperCase();
@@ -525,10 +554,7 @@ export class Indexer {
           if (line.endsWith(";")) break;
           if (/\b(END|IF|FOR|WHILE|SELECT)\b/i.test(line)) break;
 
-          const mType = new RegExp(
-            `^(?:(?:private|public|global|module|const|static)\\s+)*(${CICODE_TYPES_PATTERN})\\s*$`,
-            "i",
-          ).exec(line);
+          const mType = RETURN_TYPE_PREV_LINE_RE.exec(line);
           if (mType) {
             returnType = mType[1].toUpperCase();
             break;
@@ -847,9 +873,13 @@ export class Indexer {
     return this.functionRangesByFile.get(file) || [];
   }
 
-  /** Get cached ignore spans (comments/strings) for a file, if indexed. */
-  getIgnoreSpans(file: string): Array<[number, number]> | undefined {
-    return this._ignoreSpansByFile.get(file);
+  /** Get cached ignore spans for a file. Pass `{ includeFunctionHeaders: true }` to also
+   *  exclude function header ranges (needed by inlay hints). Defaults to false. */
+  getIgnoreSpans(
+    file: string,
+    opts: { includeFunctionHeaders?: boolean } = {},
+  ): Array<[number, number]> | undefined {
+    return this._ignoreSpansByFile.get(file)?.get(opts);
   }
 
   /** Resolve a variable name at a given position, respecting scope rules */
@@ -880,7 +910,7 @@ export class Indexer {
     const glob = candidates.find((v) => v.scopeType === "global");
     if (glob) return glob;
 
-    return candidates[0] || null;
+    return null;
   }
 
   isKnownLabel(name: string): boolean {

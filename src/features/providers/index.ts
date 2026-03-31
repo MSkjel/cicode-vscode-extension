@@ -76,8 +76,10 @@ export function registerProviders(
         makeFolding(indexer),
       ),
     );
+    const inlayProvider = makeInlay(indexer);
+    disposables.push(inlayProvider);
     disposables.push(
-      vscode.languages.registerInlayHintsProvider("cicode", makeInlay(indexer)),
+      vscode.languages.registerInlayHintsProvider("cicode", inlayProvider),
     );
 
     // FIX: create semantic tokens provider ONCE and reuse its legend

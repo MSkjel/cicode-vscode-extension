@@ -43,6 +43,12 @@ export const BLOCK_START_KEYWORDS = new Set([
   "SELECT",
 ]);
 
+/** Regex matching any block-opening keyword */
+export const BLOCK_OPENER_RE = new RegExp(
+  `\\b(${[...BLOCK_START_KEYWORDS].join("|")})\\b`,
+  "gi",
+);
+
 /**
  * Block-opening keywords that can appear inside a function body.
  * Same as BLOCK_START_KEYWORDS but excludes FUNCTION (no nested functions in Cicode).
@@ -125,3 +131,9 @@ export const TOKEN_RE = /\b([A-Za-z_]\w*)\b/g;
 
 /** Matches any identifier token (no capture group) */
 export const WORD_RE = /\b[A-Za-z_]\w*\b/g;
+
+/** Matches a variable declaration line */
+export const DECLARATION_LINE_RE = new RegExp(
+  `^\\s*(?:(?:GLOBAL|MODULE)\\s+)?(?:${[...CICODE_TYPES].join("|")})\\s+(?!FUNCTION\\b)\\w+`,
+  "i",
+);

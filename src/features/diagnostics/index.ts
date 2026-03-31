@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
-import { buildBothIgnoreSpans } from "../../shared/textUtils";
+import { buildIgnoreSpans } from "../../shared/textUtils";
 import { getLintConfig, findWorkspaceFiles } from "../../config";
 import { isCicodeDocument, error } from "../../shared/utils";
 import type { CheckContext } from "./context";
@@ -21,7 +21,13 @@ export function registerDiagnostics(
       const text = doc.getText();
       const lintCfg = getLintConfig(cfg);
 
-      const { ignore, ignoreNoHeaders } = buildBothIgnoreSpans(text);
+      const ignoreNoHeaders =
+        indexer.getIgnoreSpans(doc.uri.fsPath) ??
+        buildIgnoreSpans(text, { includeFunctionHeaders: false });
+      const ignore =
+        indexer.getIgnoreSpans(doc.uri.fsPath, {
+          includeFunctionHeaders: true,
+        }) ?? buildIgnoreSpans(text);
       const ctx: CheckContext = {
         doc,
         text,

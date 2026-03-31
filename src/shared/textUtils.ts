@@ -171,7 +171,8 @@ const _spanCache = new Map<
   { text: string; spans: Array<[number, number]> }
 >();
 
-function _addFunctionHeaderSpans(
+/** Returns only the function-header spans (not comments/strings). */
+export function buildHeaderSpans(
   text: string,
   base: Array<[number, number]>,
 ): Array<[number, number]> {
@@ -211,23 +212,14 @@ function _addFunctionHeaderSpans(
 
     if (re.lastIndex === m.index) re.lastIndex++;
   }
-  return mergeSpans([...base, ...extra]);
+  return extra;
 }
 
-export function buildBothIgnoreSpans(text: string): {
-  ignore: Array<[number, number]>;
-  ignoreNoHeaders: Array<[number, number]>;
-} {
-  const cachedF = _spanCache.get(false);
-  const cachedT = _spanCache.get(true);
-  if (cachedF?.text === text && cachedT?.text === text) {
-    return { ignore: cachedT.spans, ignoreNoHeaders: cachedF.spans };
-  }
-  const ignoreNoHeaders = mergeSpans(scanCommentAndStringSpans(text));
-  const ignore = _addFunctionHeaderSpans(text, ignoreNoHeaders);
-  _spanCache.set(false, { text, spans: ignoreNoHeaders });
-  _spanCache.set(true, { text, spans: ignore });
-  return { ignore, ignoreNoHeaders };
+function _addFunctionHeaderSpans(
+  text: string,
+  base: Array<[number, number]>,
+): Array<[number, number]> {
+  return mergeSpans([...base, ...buildHeaderSpans(text, base)]);
 }
 
 export function buildIgnoreSpans(
@@ -239,12 +231,12 @@ export function buildIgnoreSpans(
   const cached = _spanCache.get(includeFunctionHeaders);
   if (cached && cached.text === text) return cached.spans;
 
-  if (includeFunctionHeaders) {
-    return buildBothIgnoreSpans(text).ignore;
-  }
-  const spans = mergeSpans(scanCommentAndStringSpans(text));
-  _spanCache.set(false, { text, spans });
-  return spans;
+  const base = mergeSpans(scanCommentAndStringSpans(text));
+  _spanCache.set(false, { text, spans: base });
+  if (!includeFunctionHeaders) return base;
+  const full = _addFunctionHeaderSpans(text, base);
+  _spanCache.set(true, { text, spans: full });
+  return full;
 }
 
 export function stripLineComments(s: string): string {
