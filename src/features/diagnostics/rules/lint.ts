@@ -12,8 +12,8 @@ import {
   BLOCK_START_KEYWORDS,
   STRUCTURAL_KEYWORDS,
   STATEMENT_BOUNDARY_KEYWORDS,
-  CICODE_TYPES,
   TOKEN_RE,
+  DECLARATION_LINE_RE,
 } from "../../../shared/constants";
 
 const KEYWORD_CASE_RE = new RegExp(
@@ -27,11 +27,6 @@ const KEYWORD_CASE_RE = new RegExp(
   ]
     .map((k) => k.toLowerCase())
     .join("|")})\\b`,
-);
-
-const DECLARATION_LINE_RE = new RegExp(
-  `^\\s*(?:(?:GLOBAL|MODULE)\\s+)?(?:${[...CICODE_TYPES].join("|")})\\s+(?!FUNCTION\\b)\\w+`,
-  "i",
 );
 const NUM_RE = /\b(\d+(?:\.\d+)?)\b/g;
 const ARRAY_INDEX_RE = /\[\s*\d+\s*\]/;

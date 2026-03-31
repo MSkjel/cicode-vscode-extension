@@ -3,16 +3,11 @@ import type { Rule } from "../rule";
 import type { CheckContext } from "../context";
 import { diag } from "../diag";
 import { inSpan } from "../../../shared/textUtils";
-import { CICODE_TYPES, TOKEN_RE } from "../../../shared/constants";
+import { TOKEN_RE, DECLARATION_LINE_RE } from "../../../shared/constants";
 import {
   getFunctionBodyText,
   trackBlockDepth,
 } from "../../../shared/parseHelpers";
-
-const DECLARATION_LINE_RE = new RegExp(
-  `^\\s*(?:(?:GLOBAL|MODULE)\\s+)?(?:${[...CICODE_TYPES].join("|")})\\s+(?!FUNCTION\\b)\\w+`,
-  "i",
-);
 
 /**
  * Warn when a variable declaration appears inside a control flow block

@@ -12,12 +12,25 @@ import {
 } from "../../shared/parseHelpers";
 import { CALL_RE } from "../../shared/constants";
 
-export function makeInlay(indexer: Indexer): vscode.InlayHintsProvider {
+export function makeInlay(
+  indexer: Indexer,
+): vscode.InlayHintsProvider & vscode.Disposable {
+  const _onDidChange = new vscode.EventEmitter<void>();
+  const sub = indexer.onIndexed(() => _onDidChange.fire());
+
   return {
+    onDidChangeInlayHints: _onDidChange.event,
+    dispose() {
+      sub.dispose();
+      _onDidChange.dispose();
+    },
     provideInlayHints(doc, _range) {
       const out: vscode.InlayHint[] = [];
       const full = doc.getText();
-      const ignore = buildIgnoreSpans(full);
+      const ignore =
+        indexer.getIgnoreSpans(doc.uri.fsPath, {
+          includeFunctionHeaders: true,
+        }) ?? buildIgnoreSpans(full);
       CALL_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
 
