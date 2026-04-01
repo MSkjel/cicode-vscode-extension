@@ -182,16 +182,23 @@ export async function initBuiltins(
     }
   };
 
-  if (loadFromDisk()) return;
+  if (loadFromDisk()) {
+    applySignatureOverrides(cfg);
+    return;
+  }
 
   try {
     await rebuildBuiltins(context, cfg);
   } catch (e) {
     error("Cicode: Failed to rebuild builtins from help files:", e);
   }
-  if (loadFromDisk()) return;
+  if (loadFromDisk()) {
+    applySignatureOverrides(cfg);
+    return;
+  }
 
   loadFromShipped();
+  applySignatureOverrides(cfg);
 }
 
 function squish(s: string): string {
@@ -342,4 +349,65 @@ function save(
 
 export function getBuiltins(): Map<string, BuiltinFunction> {
   return builtinCache;
+}
+
+/**
+ * Parse a Cicode function signature string like:
+ *   STRING BlaBla(STRING sLol, [STRING sOptional])
+ * Returns a BuiltinFunction or null if the string can't be parsed.
+ * Needed because the docs are full of shit :3
+ */
+function parseSignature(sig: string): BuiltinFunction | null {
+  const m = sig.trim().match(/^(\w+)\s+(\w+)\s*\((.*)\)\s*$/is);
+  if (!m) return null;
+  const [, returnType, name, rawParams] = m;
+
+  // Normalize "[, param]" → ", [param]" so commas are always at depth-0,
+  // then also ensure adjacent optional groups separated by space get a comma.
+  const normalized = rawParams
+    .replace(/\[,\s*/g, ", [") // [, X] → , [X]
+    .replace(/\]\s*\[/g, "], ["); // ] [X] → ], [X]
+
+  const params: string[] = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of normalized) {
+    if (ch === "[") depth++;
+    else if (ch === "]") depth--;
+    if (ch === "," && depth === 0) {
+      const p = cur.trim();
+      if (p) params.push(p);
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  const last = cur.trim();
+  if (last) params.push(last);
+
+  return {
+    name,
+    returnType: returnType.toUpperCase(),
+    params: params.filter(Boolean),
+    doc: "",
+  };
+}
+
+/** Apply cicode.signatureOverrides from settings over the current builtinCache. */
+export function applySignatureOverrides(
+  cfg: () => vscode.WorkspaceConfiguration,
+): void {
+  const overrides: string[] = cfg().get("cicode.signatureOverrides", []);
+  for (const sig of overrides) {
+    const entry = parseSignature(sig);
+    if (!entry) continue;
+    const key = entry.name.toLowerCase();
+    const existing = builtinCache.get(key);
+    builtinCache.set(
+      key,
+      existing
+        ? { ...existing, returnType: entry.returnType, params: entry.params }
+        : entry,
+    );
+  }
 }

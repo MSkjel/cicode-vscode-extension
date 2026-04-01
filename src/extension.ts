@@ -6,6 +6,7 @@ import {
   initBuiltins,
   rebuildBuiltins,
   clearPathCache,
+  applySignatureOverrides,
 } from "./core/builtins/builtins";
 import { Indexer } from "./core/indexer/indexer";
 import { registerProviders } from "./features/providers";
@@ -129,6 +130,10 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration("cicode.avevaPath")) {
           clearPathCache();
+        }
+        if (e.affectsConfiguration("cicode.signatureOverrides")) {
+          applySignatureOverrides(cfg);
+          indexer?.buildAll();
         }
       }),
     );
