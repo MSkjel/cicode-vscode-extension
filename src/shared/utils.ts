@@ -87,14 +87,14 @@ export function computeParamBounds(params: string[]): ParamBounds {
   for (const raw of params || []) {
     if (!raw) continue;
 
-    const hasOpen = raw.includes("[");
-    const hasClose = raw.includes("]");
-    const fullyBracketed = hasOpen && hasClose;
+    const openCount = (raw.match(/\[/g) || []).length;
+    const closeCount = (raw.match(/\]/g) || []).length;
+    const fullyBracketed = openCount > 0 && openCount === closeCount;
     const core = raw.replace(/[\[\]]/g, "").trim();
 
-    if (!core.length && (hasOpen || hasClose)) {
-      if (hasOpen && !hasClose) inOptional = true;
-      if (hasClose && !hasOpen) inOptional = false;
+    if (!core.length) {
+      if (openCount > closeCount) inOptional = true;
+      if (closeCount > openCount) inOptional = false;
       continue;
     }
 
@@ -102,11 +102,12 @@ export function computeParamBounds(params: string[]): ParamBounds {
     max++;
 
     const hasDefault = /=/.test(raw);
-    const isOptional = inOptional || hasDefault || fullyBracketed;
+    const isOptional =
+      inOptional || hasDefault || fullyBracketed || openCount > 0;
     if (!isOptional) min++;
 
-    if (hasOpen && !hasClose) inOptional = true;
-    if (hasClose && !hasOpen) inOptional = false;
+    if (openCount > closeCount) inOptional = true;
+    if (closeCount > openCount) inOptional = false;
   }
 
   return { min, max, normalized };
@@ -116,12 +117,12 @@ export function computeParamBounds(params: string[]): ParamBounds {
 export function getOptionalParamFlags(params: string[]): boolean[] {
   let inOptional = false;
   return params.map((p) => {
-    const hasOpen = p.includes("[");
-    const hasClose = p.includes("]");
+    const openCount = (p.match(/\[/g) || []).length;
+    const closeCount = (p.match(/\]/g) || []).length;
     const hasDefault = /=/.test(p);
-    const isOptional = inOptional || hasDefault || (hasOpen && hasClose);
-    if (hasOpen && !hasClose) inOptional = true;
-    if (hasClose && !hasOpen) inOptional = false;
+    const isOptional = inOptional || hasDefault || openCount > 0;
+    if (openCount > closeCount) inOptional = true;
+    if (closeCount > openCount) inOptional = false;
     return isOptional;
   });
 }
