@@ -27,10 +27,7 @@ export function makeInlay(
     provideInlayHints(doc, _range) {
       const out: vscode.InlayHint[] = [];
       const full = doc.getText();
-      const ignore =
-        indexer.getIgnoreSpans(doc.uri.fsPath, {
-          includeFunctionHeaders: true,
-        }) ?? buildIgnoreSpans(full);
+      const ignore = buildIgnoreSpans(full);
       CALL_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
 
