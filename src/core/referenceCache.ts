@@ -274,8 +274,15 @@ export class ReferenceCache implements vscode.Disposable {
     let ignore: Array<[number, number]> | undefined;
 
     try {
-      const bytes = await vscode.workspace.fs.readFile(uri);
-      text = new TextDecoder().decode(bytes);
+      const openDoc = vscode.workspace.textDocuments.find(
+        (d) => d.uri.fsPath === file,
+      );
+      if (openDoc) {
+        text = openDoc.getText();
+      } else {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        text = new TextDecoder().decode(bytes);
+      }
     } catch {
       return;
     }

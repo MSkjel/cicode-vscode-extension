@@ -80,7 +80,7 @@ export class Indexer {
     context: vscode.ExtensionContext,
     private readonly cfg: () => vscode.WorkspaceConfiguration,
   ) {
-    this._debouncedIndex = debounce((doc) => this._indexFile(doc), 300);
+    this._debouncedIndex = debounce((doc) => this._indexFile(doc), 500);
     this._debouncedReindexLabels = debounce(
       (p: string) => this._reindexLabelsFile(p),
       500,
@@ -635,7 +635,7 @@ export class Indexer {
 
       out.push({
         ...h,
-        startOffset: h.headerIndex,
+        startOffset: h.headerEndPos,
         endOffset: endPos,
         bodyRange: new vscode.Range(
           doc.positionAt(bodyStart),

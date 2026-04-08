@@ -59,13 +59,14 @@ export function registerDiagnostics(
   }
 
   indexer.onIndexed(async (changedFile) => {
-    indexingReady = true;
     if (changedFile) {
+      if (!indexingReady) return;
       const doc = vscode.workspace.textDocuments.find(
         (d) => d.uri.fsPath === changedFile,
       );
       if (doc && isCicodeDocument(doc)) run(doc);
     } else {
+      indexingReady = true;
       await runAll();
     }
   });
