@@ -8,6 +8,8 @@ import {
   BLOCK_OPENERS,
   STRUCTURAL_KEYWORDS,
   TOKEN_RE,
+  SYMBOL_CONTINUATION_RE,
+  WORD_CONTINUATION_OPS,
 } from "../../../shared/constants";
 
 /**
@@ -21,6 +23,14 @@ function skipReturnStatement(body: string, pos: number): number {
   while (i < body.length) {
     const ch = body[i];
 
+    // Skip string literals
+    if (ch === '"' || ch === "'") {
+      i++;
+      while (i < body.length && body[i] !== ch) i++;
+      i++;
+      continue;
+    }
+
     if (ch === "(") {
       parenDepth++;
     } else if (ch === ")") {
@@ -28,30 +38,41 @@ function skipReturnStatement(body: string, pos: number): number {
     } else if (ch === ";" && parenDepth === 0) {
       return i + 1;
     } else if ((ch === "\n" || ch === "\r") && parenDepth === 0) {
-      // Look backward for the last non-whitespace chars to detect continuations.
-      let k = i - 1;
-      while (k >= pos && (body[k] === " " || body[k] === "\t")) k--;
+      // Treat \r\n as a single newline
+      const lineEnd = ch === "\r" && body[i + 1] === "\n" ? i + 2 : i + 1;
 
-      // Symbol operators: + - * / ,
-      if (k >= pos && /[+\-*\/,]/.test(body[k])) {
-        i++;
+      // Look backward for the last non-whitespace to detect continuations.
+      let k = i - 1;
+      while (k >= pos && /\s/.test(body[k])) k--;
+
+      // Symbol operators at end of line: + - * / ,
+      if (k >= pos && SYMBOL_CONTINUATION_RE.test(body[k])) {
+        i = lineEnd;
         continue;
       }
 
-      // Word operators
+      // Word operators at end of line
       if (k >= pos && /[A-Za-z]/.test(body[k])) {
         let wordEnd = k + 1;
         let wordStart = k;
         while (wordStart > pos && /[A-Za-z]/.test(body[wordStart - 1]))
           wordStart--;
         const lastWord = body.slice(wordStart, wordEnd).toUpperCase();
-        if (lastWord === "OR" || lastWord === "AND" || lastWord === "NOT") {
-          i++;
+        if (WORD_CONTINUATION_OPS.has(lastWord)) {
+          i = lineEnd;
           continue;
         }
       }
 
-      return ch === "\r" && body[i + 1] === "\n" ? i + 2 : i + 1;
+      // Check start of next line for leading operators (e.g. RETURN 1\n+ 1)
+      let j = lineEnd;
+      while (j < body.length && (body[j] === " " || body[j] === "\t")) j++;
+      if (j < body.length && SYMBOL_CONTINUATION_RE.test(body[j])) {
+        i = lineEnd;
+        continue;
+      }
+
+      return lineEnd;
     }
 
     i++;
@@ -95,10 +116,11 @@ export const unreachableCodeRule: Rule = {
           depth--;
         } else if (BLOCK_OPENERS.has(word)) {
           if (returnSeenAtDepthZero && depth === 0) {
-            const pos = doc.positionAt(absPos);
+            const start = doc.positionAt(absPos);
+            const endLine = f.bodyRange.end.line;
             diags.push(
               diag(
-                new vscode.Range(pos, pos.translate(0, m[1].length)),
+                new vscode.Range(start, new vscode.Position(endLine, 0)),
                 "Unreachable code after RETURN.",
                 vscode.DiagnosticSeverity.Warning,
               ),
@@ -116,10 +138,11 @@ export const unreachableCodeRule: Rule = {
           }
         } else if (!STRUCTURAL_KEYWORDS.has(word)) {
           if (returnSeenAtDepthZero && depth === 0) {
-            const pos = doc.positionAt(absPos);
+            const start = doc.positionAt(absPos);
+            const endLine = f.bodyRange.end.line;
             diags.push(
               diag(
-                new vscode.Range(pos, pos.translate(0, m[1].length)),
+                new vscode.Range(start, new vscode.Position(endLine, 0)),
                 "Unreachable code after RETURN.",
                 vscode.DiagnosticSeverity.Warning,
               ),

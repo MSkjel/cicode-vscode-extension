@@ -71,6 +71,20 @@ export const STRUCTURAL_KEYWORDS = new Set([
 /** Keywords that indicate statement boundaries */
 export const STATEMENT_BOUNDARY_KEYWORDS = new Set(["END", "FUNCTION"]);
 
+/** Symbol operators that indicate an expression continues on the next line */
+export const SYMBOL_CONTINUATION_RE = /[+\-*\/,]/;
+
+/** Word operators that indicate an expression continues on the next line */
+export const WORD_CONTINUATION_OPS = new Set([
+  "AND",
+  "OR",
+  "NOT",
+  "MOD",
+  "BITAND",
+  "BITOR",
+  "BITXOR",
+]);
+
 /** Scope and flow keywords that are not variables or function calls */
 export const MISC_KEYWORDS = new Set([
   // Storage modifiers
@@ -99,6 +113,7 @@ export const CICODE_TYPES = new Set([
   "OBJECT",
   "QUALITY",
   "TIMESTAMP",
+  "BOOLEAN",
 ]);
 
 /**
@@ -106,6 +121,7 @@ export const CICODE_TYPES = new Set([
  * but NOT valid in Cicode variable or function declarations.
  */
 export const TAG_ONLY_TYPES = new Set([
+  "VOID",
   "LONG",
   "ULONG",
   "BYTE",
@@ -113,8 +129,6 @@ export const TAG_ONLY_TYPES = new Set([
   "UINT",
   "BCD",
   "LONGBCD",
-  "VOID",
-  "BOOLEAN",
 ]);
 
 /** All recognized type names (Cicode + tag-only), for parsing/highlighting */
