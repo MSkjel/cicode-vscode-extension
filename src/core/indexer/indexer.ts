@@ -610,8 +610,11 @@ export class Indexer {
 
       // Track nesting depth to find matching END
       // Note: 'function' is excluded since Cicode doesn't support nested functions
+      // END optionally consumes a trailing block keyword (END SELECT, END IF, ...)
+      // so the closing keyword isn't re-counted as opening a new block.
       let depth = 1;
-      const tokenRe = /\b(if|for|while|repeat|try|select|end)\b/gi;
+      const tokenRe =
+        /\bend\b(?:[ \t]+(?:if|for|while|repeat|try|select)\b)?|\b(?:if|for|while|repeat|try|select)\b/gi;
       tokenRe.lastIndex = bodyStart;
 
       let endPos = maxSearchEnd;
@@ -621,8 +624,8 @@ export class Indexer {
         if (t.index >= maxSearchEnd) break;
         if (inSpan(t.index, ignoreCS)) continue;
 
-        const kw = t[0].toLowerCase();
-        if (kw === "end") {
+        const isEnd = /^end\b/i.test(t[0]);
+        if (isEnd) {
           depth--;
           if (depth === 0) {
             endPos = t.index + t[0].length;
