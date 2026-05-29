@@ -4,6 +4,15 @@ using System.Threading;
 
 namespace CicodeDebugAdapter
 {
+    /// <summary>One entry in the Cicode call stack as reported by the runtime.</summary>
+    class CicodeFrame
+    {
+        public string Name;       // function name parsed from call signature
+        public string CallText;   // raw "FuncName(arg1, arg2, ...);" line
+        public List<string> Args = new List<string>();   // raw arg values parsed from call
+        public Dictionary<string, string> Locals = new Dictionary<string, string>();
+    }
+
     /// <summary>
     /// All shared DAP session state.  Accessed from both the DAP handlers (main thread)
     /// and the IPC reader thread. Locking is done at the call sites.
@@ -34,6 +43,11 @@ namespace CicodeDebugAdapter
 
         public static readonly Dictionary<string, string> StepWatchVars =
             new Dictionary<string, string>();
+        // Parsed call stack from the latest EVT_LOCALS_LIVE payload.
+        // Index 0 = innermost (currently executing) frame, last = outermost.
+        public static readonly List<CicodeFrame> Frames = new List<CicodeFrame>();
+        // Mirror of the innermost frame's Locals, kept for backwards compatibility
+        // (conditional-breakpoint evaluation still reads from this dict).
         public static readonly Dictionary<string, string> LocalVars =
             new Dictionary<string, string>();
         public static int StoppedThreadId = -1; // guarded by VarsLock
@@ -106,6 +120,7 @@ namespace CicodeDebugAdapter
                 StoppedLine = 0;
                 StepWatchVars.Clear();
                 LocalVars.Clear();
+                Frames.Clear();
             }
         }
     }

@@ -459,7 +459,12 @@ namespace CicodeDebugAdapter
                                 stoppedLine = DapState.StoppedLine;
                             }
 
-                            string innermostCall = null;
+                            // Parse the runtime payload as an interleaved sequence:
+                            //   <call line>; [kv line]* <call line>; [kv line]* ...
+                            // Each call line opens a new frame; kv lines that follow belong to it.
+                            // Runtime order is outermost-first, we'll reverse to innermost-first.
+                            var parsed = new List<CicodeFrame>();
+                            CicodeFrame cur = null;
                             foreach (
                                 string ln in text.Split(
                                     new[] { '\r', '\n' },
@@ -469,42 +474,75 @@ namespace CicodeDebugAdapter
                             {
                                 string t = ln.TrimEnd();
                                 if (t.EndsWith(";") && t.Contains("("))
-                                    innermostCall = t;
-                                else
-                                    break;
+                                {
+                                    cur = new CicodeFrame
+                                    {
+                                        CallText = t,
+                                        Name = ExtractFuncName(t),
+                                        Args = SplitCallArgs(t),
+                                    };
+                                    parsed.Add(cur);
+                                    continue;
+                                }
+                                int eq = ln.IndexOf('=');
+                                if (eq <= 0 || cur == null) continue;
+                                string vname = ln.Substring(0, eq).Trim();
+                                string vval = StripQuality(ln.Substring(eq + 1).Trim());
+                                if (vname.Length > 0)
+                                    cur.Locals[vname] = vval;
+                            }
+
+                            // VS Code expects innermost (currently-executing) frame at index 0.
+                            parsed.Reverse();
+
+                            // For the innermost frame we know the source location, so we can map
+                            // call args to real parameter names. Outer frames fall back to arg0/arg1/...
+                            if (parsed.Count > 0)
+                            {
+                                var inner = parsed[0];
+                                List<string> paramNames = GetFunctionParams(
+                                    sourceFile,
+                                    stoppedLine
+                                );
+                                for (int pi = 0; pi < inner.Args.Count; pi++)
+                                {
+                                    string pname =
+                                        pi < paramNames.Count ? paramNames[pi] : ("arg" + pi);
+                                    inner.Locals[pname] = StripQuality(inner.Args[pi]);
+                                }
+                                Logger.Ipc(
+                                    "  innermost params: "
+                                        + paramNames.Count
+                                        + " names, "
+                                        + inner.Args.Count
+                                        + " values"
+                                );
+                            }
+                            for (int fi = 1; fi < parsed.Count; fi++)
+                            {
+                                var f = parsed[fi];
+                                for (int pi = 0; pi < f.Args.Count; pi++)
+                                    f.Locals["arg" + pi] = StripQuality(f.Args[pi]);
                             }
 
                             lock (DapState.VarsLock)
                             {
+                                DapState.Frames.Clear();
+                                DapState.Frames.AddRange(parsed);
+                                // Mirror innermost frame's locals into LocalVars so conditional
+                                // breakpoint evaluation (which reads LocalVars) keeps working.
                                 DapState.LocalVars.Clear();
-                                if (innermostCall != null)
-                                {
-                                    List<string> paramNames = GetFunctionParams(
-                                        sourceFile,
-                                        stoppedLine
-                                    );
-                                    List<string> paramVals = SplitCallArgs(innermostCall);
-                                    for (
-                                        int pi = 0;
-                                        pi < paramNames.Count && pi < paramVals.Count;
-                                        pi++
-                                    )
-                                        DapState.LocalVars[paramNames[pi]] = StripQuality(
-                                            paramVals[pi]
-                                        );
-                                    Logger.Ipc(
-                                        "  params parsed: "
-                                            + paramNames.Count
-                                            + " names, "
-                                            + paramVals.Count
-                                            + " values"
-                                    );
-                                }
-                                ParseKeyValueLines(text, DapState.LocalVars, skipCallStack: true);
+                                if (parsed.Count > 0)
+                                    foreach (var kv in parsed[0].Locals)
+                                        DapState.LocalVars[kv.Key] = kv.Value;
                                 DapState.LocalVarsPending = false;
                             }
                             DapState.LocalsReady.Set();
-                            Logger.Ipc("  total vars: " + DapState.LocalVars.Count);
+                            Logger.Ipc(
+                                "  frames=" + parsed.Count
+                                    + " innermost vars="
+                                    + (parsed.Count > 0 ? parsed[0].Locals.Count : 0)
+                            );
                         }
                         catch (Exception ex)
                         {
@@ -640,6 +678,7 @@ namespace CicodeDebugAdapter
                 DapState.StoppedLine = line;
                 DapState.StepWatchVars.Clear();
                 DapState.LocalVars.Clear();
+                DapState.Frames.Clear();
                 DapState.StepWatchPending = true;
                 DapState.LocalVarsPending = true;
                 DapState.StepWatchReady.Reset();
@@ -708,6 +747,14 @@ namespace CicodeDebugAdapter
                 Logger.Ipc("GetFunctionParams error: " + ex.Message);
             }
             return result;
+        }
+
+        static string ExtractFuncName(string callText)
+        {
+            if (callText == null) return "";
+            int paren = callText.IndexOf('(');
+            string head = paren > 0 ? callText.Substring(0, paren) : callText;
+            return head.Trim();
         }
 
         static List<string> SplitCallArgs(string callText)

@@ -55,7 +55,7 @@ namespace CicodeDebugAdapter
                     OnStackTrace(seq, args);
                     break;
                 case "scopes":
-                    OnScopes(seq);
+                    OnScopes(seq, args);
                     break;
                 case "variables":
                     OnVariables(seq, args);
@@ -313,6 +313,13 @@ namespace CicodeDebugAdapter
             DapTransport.Response(seq, "threads", true, "{\"threads\":" + sb + "}");
         }
 
+        // Frame id encoding: FRAME_ID_BASE + frameIdx (frameIdx 0 = innermost)
+        // Locals varRef encoding:  LOCALS_REF_BASE + frameIdx
+        // StepWatch varRef = 1 (frame-independent)
+        const int FRAME_ID_BASE = 1000;
+        const int LOCALS_REF_BASE = 2000;
+        const int STEP_WATCH_REF = 1;
+
         static void OnStackTrace(int seq, Dictionary<string, object> args)
         {
             int tid = args.GetInt("threadId", -1);
@@ -321,27 +328,64 @@ namespace CicodeDebugAdapter
             int line;
             DapState.TryGetThreadLocation(tid, out file, out line);
 
-            string frame =
-                (file != null && line > 0)
-                    ? "{\"id\":"
-                        + (tid > 0 ? tid * 1000 : 1)
-                        + ",\"name\":\"Cicode\""
-                        + ",\"source\":{\"path\":"
-                        + Json.Str(file)
-                        + "},\"line\":"
-                        + line
-                        + ",\"column\":0}"
-                    : "{\"id\":1,\"name\":\"Cicode\",\"line\":0,\"column\":0}";
+            // Wait briefly for the runtime's locals/stack payload to arrive
+            // (PrefetchVars fires CMD_GET_LOCALS_LIVE on stopped events).
+            DapState.LocalsReady.Wait(500);
 
+            List<CicodeFrame> frames;
+            lock (DapState.VarsLock)
+            {
+                frames = new List<CicodeFrame>(DapState.Frames);
+            }
+
+            var sb = new StringBuilder("[");
+            if (frames.Count == 0)
+            {
+                // Fallback: synthetic single frame from the thread location.
+                sb.Append("{\"id\":").Append(FRAME_ID_BASE).Append(",\"name\":\"Cicode\"");
+                if (file != null && line > 0)
+                    sb.Append(",\"source\":{\"path\":")
+                        .Append(Json.Str(file))
+                        .Append("},\"line\":")
+                        .Append(line);
+                else
+                    sb.Append(",\"line\":0");
+                sb.Append(",\"column\":0}");
+            }
+            else
+            {
+                for (int i = 0; i < frames.Count; i++)
+                {
+                    if (i > 0) sb.Append(',');
+                    string name = frames[i].Name;
+                    if (string.IsNullOrEmpty(name)) name = "Cicode";
+                    sb.Append("{\"id\":")
+                        .Append(FRAME_ID_BASE + i)
+                        .Append(",\"name\":")
+                        .Append(Json.Str(name));
+                    // Only the innermost frame has a known source location.
+                    if (i == 0 && file != null && line > 0)
+                        sb.Append(",\"source\":{\"path\":")
+                            .Append(Json.Str(file))
+                            .Append("},\"line\":")
+                            .Append(line);
+                    else
+                        sb.Append(",\"line\":0");
+                    sb.Append(",\"column\":0}");
+                }
+            }
+            sb.Append("]");
+
+            int total = frames.Count > 0 ? frames.Count : 1;
             DapTransport.Response(
                 seq,
                 "stackTrace",
                 true,
-                "{\"stackFrames\":[" + frame + "],\"totalFrames\":1}"
+                "{\"stackFrames\":" + sb + ",\"totalFrames\":" + total + "}"
             );
         }
 
-        static void OnScopes(int seq)
+        static void OnScopes(int seq, Dictionary<string, object> args)
         {
             if (!DapState.IsStopped)
             {
@@ -349,31 +393,21 @@ namespace CicodeDebugAdapter
                 return;
             }
 
-            int tid;
-            lock (DapState.VarsLock)
-            {
-                tid = DapState.StoppedThreadId;
-                if (tid >= 0)
-                {
-                    DapState.StepWatchVars.Clear();
-                    DapState.StepWatchPending = true;
-                    DapState.LocalVars.Clear();
-                    DapState.LocalVarsPending = true;
-                }
-            }
-            if (tid >= 0)
-            {
-                IpcClient.SendCmd(IpcClient.CMD_GET_STEP_WATCH, BitConverter.GetBytes((uint)tid));
-                IpcClient.SendCmd(IpcClient.CMD_GET_LOCALS_LIVE, BitConverter.GetBytes((uint)tid));
-            }
+            int frameId = args.GetInt("frameId", FRAME_ID_BASE);
+            int frameIdx = frameId - FRAME_ID_BASE;
+            if (frameIdx < 0) frameIdx = 0;
+
+            int localsRef = LOCALS_REF_BASE + frameIdx;
 
             DapTransport.Response(
                 seq,
                 "scopes",
                 true,
                 "{\"scopes\":["
-                    + "{\"name\":\"Locals\",\"variablesReference\":2,\"expensive\":false,\"presentationHint\":\"locals\"},"
-                    + "{\"name\":\"Step Watch\",\"variablesReference\":1,\"expensive\":false,\"presentationHint\":\"registers\"}"
+                    + "{\"name\":\"Locals\",\"variablesReference\":" + localsRef
+                    + ",\"expensive\":false,\"presentationHint\":\"locals\"},"
+                    + "{\"name\":\"Step Watch\",\"variablesReference\":" + STEP_WATCH_REF
+                    + ",\"expensive\":false,\"presentationHint\":\"registers\"}"
                     + "]}"
             );
         }
@@ -382,16 +416,8 @@ namespace CicodeDebugAdapter
         {
             int varRef = args.GetInt("variablesReference");
 
-            if (varRef == 2)
-                RespondWithVariables(
-                    seq,
-                    DapState.LocalsReady,
-                    500,
-                    DapState.LocalVars,
-                    "(pending)",
-                    "Local variable data not yet received. check cicode-dap.log for 0x102a response"
-                );
-            else if (varRef == 1)
+            if (varRef == STEP_WATCH_REF)
+            {
                 RespondWithVariables(
                     seq,
                     DapState.StepWatchReady,
@@ -400,8 +426,34 @@ namespace CicodeDebugAdapter
                     "(none)",
                     "No step-watch variables configured in runtime"
                 );
-            else
-                DapTransport.Response(seq, "variables", true, "{\"variables\":[]}");
+                return;
+            }
+
+            if (varRef >= LOCALS_REF_BASE)
+            {
+                int frameIdx = varRef - LOCALS_REF_BASE;
+                DapState.LocalsReady.Wait(500);
+                Dictionary<string, string> vars;
+                lock (DapState.VarsLock)
+                {
+                    vars = (frameIdx >= 0 && frameIdx < DapState.Frames.Count)
+                        ? new Dictionary<string, string>(DapState.Frames[frameIdx].Locals)
+                        : new Dictionary<string, string>();
+                }
+                DapTransport.Response(
+                    seq,
+                    "variables",
+                    true,
+                    "{\"variables\":" + BuildVarArray(
+                        vars,
+                        "(pending)",
+                        "Local variable data not yet received. check cicode-dap.log for 0x102a response"
+                    ) + "}"
+                );
+                return;
+            }
+
+            DapTransport.Response(seq, "variables", true, "{\"variables\":[]}");
         }
 
         static void RespondWithVariables(

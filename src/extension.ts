@@ -62,9 +62,16 @@ export async function activate(context: vscode.ExtensionContext) {
               });
               if (!variables?.length) return [];
 
-              const varNames: string[] = variables.map(
-                (v: { name: string }) => v.name,
-              );
+              // Bind values to context.frameId directly via InlineValueText so VS Code
+              // doesn't fall back to its own (frame-ambiguous) name lookup.
+              const valueByName = new Map<string, string>();
+              for (const v of variables as Array<{
+                name: string;
+                value: string;
+              }>) {
+                valueByName.set(v.name, v.value);
+              }
+
               const result: vscode.InlineValue[] = [];
               const lines = document.getText().split("\n");
 
@@ -74,7 +81,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 li++
               ) {
                 const line = lines[li];
-                for (const name of varNames) {
+                for (const [name, value] of valueByName) {
                   let col = 0;
                   while (col < line.length) {
                     const idx = line.indexOf(name, col);
@@ -85,10 +92,9 @@ export async function activate(context: vscode.ExtensionContext) {
                       !/\w/.test(line[idx + name.length]);
                     if (beforeOk && afterOk) {
                       result.push(
-                        new vscode.InlineValueVariableLookup(
+                        new vscode.InlineValueText(
                           new vscode.Range(li, idx, li, idx + name.length),
-                          name,
-                          true,
+                          `${name} = ${value}`,
                         ),
                       );
                     }
