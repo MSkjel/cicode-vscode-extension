@@ -38,9 +38,7 @@ class CicodeExplorerItem extends vscode.TreeItem {
   }
 }
 
-class CicodeExplorerProvider
-  implements vscode.TreeDataProvider<CicodeExplorerItem>
-{
+class CicodeExplorerProvider implements vscode.TreeDataProvider<CicodeExplorerItem> {
   private _onDidChangeTreeData = new vscode.EventEmitter<
     CicodeExplorerItem | undefined | void
   >();

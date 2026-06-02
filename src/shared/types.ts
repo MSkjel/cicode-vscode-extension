@@ -13,6 +13,7 @@ export interface FunctionInfo {
   readonly expr?: string;
   readonly returns?: string;
   readonly helpPath?: string;
+  readonly helpId?: string;
   readonly paramDocs?: Record<string, string>;
 }
 

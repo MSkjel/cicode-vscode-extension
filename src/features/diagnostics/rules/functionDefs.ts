@@ -41,7 +41,7 @@ export const functionDefsRule: Rule = {
       }
 
       const builtin = indexer.getAllFunctions().get(key);
-      if (builtin?.helpPath) {
+      if (builtin?.helpPath || builtin?.helpId) {
         diags.push(
           diag(
             f.location.range,

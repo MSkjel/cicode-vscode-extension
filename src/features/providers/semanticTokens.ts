@@ -20,7 +20,7 @@ export function makeSemanticTokens(indexer: Indexer): {
     if (builtinNames) return builtinNames;
     builtinNames = new Set();
     for (const [key, f] of indexer.getAllFunctions()) {
-      if (f.helpPath) builtinNames.add(key);
+      if (f.helpPath || f.helpId) builtinNames.add(key);
     }
     return builtinNames;
   }

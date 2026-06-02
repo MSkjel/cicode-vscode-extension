@@ -387,16 +387,16 @@
     "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.ts\""
   },
   "dependencies": {
-    "cheerio": "^1.1.2"
+    "cheerio": "^1.2.0"
   },
   "devDependencies": {
-    "@types/node": "^20.14.10",
+    "@types/node": "^20.19.41",
     "@types/vscode": "^1.88.0",
-    "prettier": "^3.6.2",
-    "ts-loader": "^9.5.4",
-    "typescript": "^5.4.5",
-    "@vscode/vsce": "^3.0.0",
-    "webpack": "^5.102.0",
+    "prettier": "^3.8.3",
+    "ts-loader": "^9.6.0",
+    "typescript": "^5.9.3",
+    "@vscode/vsce": "^3.9.1",
+    "webpack": "^5.107.2",
     "webpack-cli": "^6.0.1"
   }
 }
