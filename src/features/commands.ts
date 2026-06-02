@@ -4,6 +4,11 @@ import type { Indexer } from "../core/indexer/indexer";
 import { rebuildBuiltins, resolveContentPath } from "../core/builtins/builtins";
 import { insertDocSkeletonAtCursor } from "./docSkeleton";
 
+// Local AVEVA help server (HelpDocumentationViewer, 2023 R2+). It serves the
+// Author-it documentation portal per product; topics are opened via the
+// #showid/<id> hash route (the same one the portal's own cross-links use).
+const HELP_SERVER_BASE = "https://localhost:28808/Plant%20SCADA";
+
 export function registerCommands(
   context: vscode.ExtensionContext,
   indexer: Indexer,
@@ -43,27 +48,30 @@ export function registerCommands(
           );
 
         const f = indexer.getAllFunctions().get(name.toLowerCase());
+
+        // Preferred (2023 R2+): deep-link into the local AVEVA help server.
+        // HelpDocumentationViewer serves the Author-it portal and resolves the
+        // topic id via the same #showid route its own cross-references use.
+        if (f?.helpId) {
+          const url = `${HELP_SERVER_BASE}/#showid/${encodeURIComponent(f.helpId)}`;
+          await vscode.env.openExternal(vscode.Uri.parse(url));
+          return;
+        }
+
+        // Fallback: open a local Flare help file (2020 / file-based installs).
         const helpFile = f?.helpPath;
-
-        if (!helpFile) {
-          vscode.window.showInformationMessage(`No help page for '${name}'.`);
+        const contentPath = helpFile ? resolveContentPath(cfg) : null;
+        if (helpFile && contentPath) {
+          const fullPath = path.join(contentPath, helpFile);
+          await vscode.env.openExternal(vscode.Uri.file(fullPath));
           return;
         }
 
-        // Find content path
-        const contentPath = resolveContentPath(cfg);
-
-        if (!contentPath) {
-          vscode.window.showInformationMessage(
-            "Could not find AVEVA help files. Check cicode.avevaPath setting.",
-          );
-          return;
-        }
-
-        // Open the help file directly
-        const fullPath = path.join(contentPath, helpFile);
-        const uri = vscode.Uri.file(fullPath);
-        await vscode.env.openExternal(uri);
+        vscode.window.showInformationMessage(
+          helpFile
+            ? "Could not find AVEVA help files. Check cicode.avevaPath setting."
+            : `No help page for '${name}'.`,
+        );
       },
     ),
   );

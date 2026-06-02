@@ -49,8 +49,8 @@ export function makeNavProviders(
           const showLink = vscode.workspace
             .getConfiguration("cicode")
             .get<boolean>("hover.showHelpLink", true);
-          const helpPath = entry.helpPath;
-          if (showLink && helpPath) {
+          const hasHelp = entry.helpId || entry.helpPath;
+          if (showLink && hasHelp) {
             const cmdUri = vscode.Uri.parse(
               `command:cicode.openHelpForSymbol?${encodeURIComponent(JSON.stringify(entry.name))}`,
             );

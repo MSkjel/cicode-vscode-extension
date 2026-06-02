@@ -8,18 +8,46 @@ import { error } from "../../shared/utils";
 
 let builtinCache: Map<string, BuiltinFunction> = new Map();
 const CACHE_FILE = "builtinFunctions.json";
-const CACHE_VERSION = 6;
+const CACHE_VERSION = 8;
 
 const CONTENT_FOLDER_NAME = "CicodeReferenceCitectHTML";
 
+// AVEVA Product Documentation portal (2023 R2+). The HelpDocumentationViewer
+// service serves this content over https://localhost:28808/<Product>/, and the
+// per-function topics live as numeric-id files under <Product>\content\en\.
+const PORTAL_DOCS_SUBPATH = ["AVEVA", "Product Documentation"];
+const PORTAL_PRODUCT = "Plant SCADA";
+
 // Cached resolved paths
 let resolvedContentPath: string | null = null;
+let resolvedPortalPath: string | null = null;
 let resolvedHelpRoot: string | null = null;
 
 /**
- * Recursively search for the Cicode help content folder
+ * Does this directory directly contain Cicode help topic files (.htm/.html)?
  */
-function findContentFolder(baseDir: string, maxDepth = 5): string | null {
+function dirHasTopics(dir: string): boolean {
+  try {
+    return fs
+      .readdirSync(dir)
+      .some((f) => f.endsWith(".htm") || f.endsWith(".html"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Recursively search for the Cicode help content folder.
+ *
+ * Handles both layouts:
+ *   - 2023+ (MadCap Flare WebHelp): ...\Help\SCADA Help\Content\Cicode\*.html
+ *   - 2020  (legacy):              ...\CicodeReferenceCitectHTML\Content\*.htm
+ *
+ * In 2023 a `CicodeReferenceCitectHTML` folder still exists, but only as an
+ * empty Flare subsystem stub, so we require the candidate folder to actually
+ * contain topic files before accepting it.
+ */
+function findContentFolder(baseDir: string, maxDepth = 7): string | null {
   if (maxDepth <= 0 || !fs.existsSync(baseDir)) return null;
 
   try {
@@ -28,12 +56,15 @@ function findContentFolder(baseDir: string, maxDepth = 5): string | null {
       if (!entry.isDirectory()) continue;
       const fullPath = path.join(baseDir, entry.name);
 
-      // Check if this is the CicodeReferenceCitectHTML folder
+      // 2023+: a `Cicode` folder containing the function topic files.
+      if (entry.name.toLowerCase() === "cicode" && dirHasTopics(fullPath)) {
+        return fullPath;
+      }
+
+      // 2020: `CicodeReferenceCitectHTML\Content` containing topic files.
       if (entry.name === CONTENT_FOLDER_NAME) {
         const contentPath = path.join(fullPath, "Content");
-        if (fs.existsSync(contentPath)) {
-          return contentPath;
-        }
+        if (dirHasTopics(contentPath)) return contentPath;
       }
 
       // Recurse into subdirectories
@@ -84,24 +115,97 @@ export function resolveContentPath(
 
   if (!avevaPath) return null;
 
-  // If it already points to a Content folder with .htm files, use it directly
-  if (fs.existsSync(avevaPath)) {
-    try {
-      const files = fs.readdirSync(avevaPath);
-      if (files.some((f) => f.endsWith(".htm") || f.endsWith(".html"))) {
-        resolvedContentPath = avevaPath;
-        return avevaPath;
-      }
-    } catch {
-      // Not a directory or permission error
-    }
-  }
-
-  // Search within the path
+  // Prefer a discovered Cicode topic folder within the path. This runs before
+  // the direct-folder check so that pointing avevaPath at a broad content
+  // folder (e.g. ...\SCADA Help\Content) still narrows to its `Cicode`
+  // subfolder instead of scraping every unrelated topic.
   const found = findContentFolder(avevaPath);
   if (found) {
     resolvedContentPath = found;
     return found;
+  }
+
+  // Fallback: avevaPath itself is a folder of topic files (e.g. the user
+  // pointed it straight at ...\Content\Cicode or the legacy Content folder).
+  if (fs.existsSync(avevaPath) && dirHasTopics(avevaPath)) {
+    resolvedContentPath = avevaPath;
+    return avevaPath;
+  }
+
+  return null;
+}
+
+/**
+ * Does this directory look like the Author-it portal's Cicode content, i.e. a
+ * `content\en` folder with numeric-id topic files, at least one of which is a
+ * Cicode function reference (has a Syntax section)?
+ */
+function portalDirHasCicode(dir: string): boolean {
+  try {
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".html"));
+    if (files.length < 50) return false; // not the full doc set
+    // Sample a bounded number of files for the function-reference signature.
+    let checked = 0;
+    for (const f of files) {
+      if (checked >= 200) break;
+      checked++;
+      const html = fs.readFileSync(path.join(dir, f), "utf8");
+      if (
+        html.includes('class="subheading">Syntax') &&
+        /class="strong">\s*[A-Za-z_][\w]*\s*<\/span>\(/.test(html)
+      ) {
+        return true;
+      }
+    }
+  } catch {
+    // Permission or read error
+  }
+  return false;
+}
+
+/**
+ * Resolve the Author-it portal content folder (`...\content\en`) for the
+ * Cicode reference. Prefers the "Plant SCADA" product under %ProgramData%,
+ * then scans the other registered products. Returns null when the portal
+ * documentation is not installed.
+ */
+export function resolvePortalContentPath(
+  cfg: () => vscode.WorkspaceConfiguration,
+): string | null {
+  if (resolvedPortalPath) return resolvedPortalPath;
+
+  // Allow an explicit override: avevaPath may itself point at a portal folder.
+  const override =
+    (cfg().get("cicode.avevaPath") as string | undefined)?.trim() || "";
+
+  const bases: string[] = [];
+  const programData = process.env.ProgramData || "C:\\ProgramData";
+  bases.push(path.join(programData, ...PORTAL_DOCS_SUBPATH));
+  if (override) bases.push(override);
+
+  for (const base of bases) {
+    if (!fs.existsSync(base)) continue;
+
+    // Preferred: the Plant SCADA product folder.
+    const preferred = path.join(base, PORTAL_PRODUCT, "content", "en");
+    if (fs.existsSync(preferred) && portalDirHasCicode(preferred)) {
+      resolvedPortalPath = preferred;
+      return preferred;
+    }
+
+    // Otherwise scan all product folders for one carrying Cicode topics.
+    try {
+      for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const dir = path.join(base, entry.name, "content", "en");
+        if (fs.existsSync(dir) && portalDirHasCicode(dir)) {
+          resolvedPortalPath = dir;
+          return dir;
+        }
+      }
+    } catch {
+      // Permission error, try next base
+    }
   }
 
   return null;
@@ -134,6 +238,7 @@ export function resolveHelpRoot(
  */
 export function clearPathCache(): void {
   resolvedContentPath = null;
+  resolvedPortalPath = null;
   resolvedHelpRoot = null;
 }
 
@@ -273,6 +378,136 @@ function extractParamDocs($: cheerio.CheerioAPI): Record<string, string> {
   return paramDocs;
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Parse a single Author-it portal topic (2023 R2+). Returns null when the
+ * topic is not a Cicode function reference (e.g. a concept/overview page).
+ *
+ * Portal topic shape (classes differ from Flare but the data is the same):
+ *   <div data-aitid="1033446">
+ *     <h5>AlarmAckRec</h5>
+ *     <p class="paragraph">summary...</p>
+ *     <p class="subheading">Syntax</p>
+ *     <p class="paragraph">INT AlarmAckRec(LONG Record [, STRING ClusterName])</p>
+ *     <p class="parameterterm">Record</p>
+ *     <p class="parameterdefinition">The alarm record number...</p>
+ *     <p class="subheading">Return Value</p>
+ *     <p class="paragraph">0 if successful...</p>
+ */
+function parsePortalTopic(
+  $: cheerio.CheerioAPI,
+  idFromFile: string,
+): BuiltinFunction | null {
+  const root = $("div[data-aitid]").first();
+  const scope = root.length ? root : $("body");
+
+  const name = scope.find("h5").first().text().trim();
+  if (!name) return null;
+
+  const helpId = (root.attr("data-aitid") || idFromFile).trim();
+
+  // Walk the topic's children in document order, tracking the current
+  // subheading so paragraphs land in the right bucket.
+  let section = "";
+  let summary = "";
+  let sigText = "";
+  let returnsDoc = "";
+  const paramDocs: Record<string, string> = {};
+  let pendingTerm: string | null = null;
+
+  scope.children().each((_, el) => {
+    const $el = $(el);
+    if ($el.is("h5")) return;
+
+    if ($el.hasClass("subheading")) {
+      section = squish($el.text()).toLowerCase();
+      return;
+    }
+    if ($el.hasClass("parameterterm")) {
+      // Some topics suffix the term with a colon ("Record:"); drop it so the
+      // key matches the parameter name used elsewhere.
+      pendingTerm = squish($el.text()).replace(/[:：]\s*$/, "");
+      return;
+    }
+    if ($el.hasClass("parameterdefinition")) {
+      if (pendingTerm) {
+        const desc = squish($el.text());
+        if (desc && !paramDocs[pendingTerm]) paramDocs[pendingTerm] = desc;
+        pendingTerm = null;
+      }
+      return;
+    }
+    if ($el.hasClass("paragraph")) {
+      const txt = squish($el.text());
+      if (!txt) return;
+      if (!section && !summary)
+        summary = txt; // before the first subheading
+      else if (section === "syntax" && !sigText) sigText = txt;
+      else if (section === "return value" && !returnsDoc) returnsDoc = txt;
+    }
+  });
+
+  // A real Cicode function topic has a signature "NAME(...)" (optionally
+  // prefixed by a return type). Anything else is a concept/overview page.
+  if (
+    !sigText ||
+    !new RegExp("\\b" + escapeRegExp(name) + "\\s*\\(").test(sigText)
+  )
+    return null;
+
+  let params: string[] = [];
+  const m = sigText.match(/\((.*)\)/);
+  if (m) {
+    params = m[1]
+      .split(",")
+      .map((p) => squish(p.replace(/\s+/g, " ")))
+      .filter(Boolean);
+  }
+
+  // Return type: a type token preceding the function name in the signature.
+  let returnType = "UNKNOWN";
+  const head = sigText.slice(0, sigText.indexOf("(")).trim();
+  const tokens = head.split(/\s+/).filter(Boolean);
+  if (
+    tokens.length >= 2 &&
+    new RegExp(`^(${CICODE_TYPES_PATTERN})$`, "i").test(tokens[0])
+  ) {
+    returnType = tokens[0].toUpperCase();
+  }
+
+  return {
+    name,
+    returnType,
+    params,
+    doc: summary,
+    returns: returnsDoc || undefined,
+    paramDocs,
+    helpId,
+  };
+}
+
+/** Scrape Cicode builtins from the Author-it portal content folder. */
+function scrapePortal(inputDir: string): Record<string, BuiltinFunction> {
+  const out: Record<string, BuiltinFunction> = {};
+  for (const file of fs.readdirSync(inputDir)) {
+    if (path.extname(file).toLowerCase() !== ".html") continue;
+    try {
+      const html = fs.readFileSync(path.join(inputDir, file), "utf8");
+      // Cheap pre-filter to skip the thousands of non-function topics.
+      if (!html.includes('class="subheading">Syntax')) continue;
+      const $ = cheerio.load(html);
+      const fn = parsePortalTopic($, path.basename(file, path.extname(file)));
+      if (fn) out[fn.name.toLowerCase()] = fn;
+    } catch (e) {
+      error("portal builtin parse fail", file, e);
+    }
+  }
+  return out;
+}
+
 export async function rebuildBuiltins(
   context: vscode.ExtensionContext,
   cfg: () => vscode.WorkspaceConfiguration,
@@ -280,6 +515,15 @@ export async function rebuildBuiltins(
   // Clear cache to force re-resolution
   clearPathCache();
 
+  // Prefer the 2023 R2+ Author-it web portal content: it is the copy that is
+  // reliably installed and yields topic ids for the help-server deep-link.
+  const portalDir = resolvePortalContentPath(cfg);
+  if (portalDir) {
+    const portalOut = scrapePortal(portalDir);
+    if (Object.keys(portalOut).length) return save(context, portalOut);
+  }
+
+  // Fallback: legacy MadCap Flare help files.
   const inputDir = resolveContentPath(cfg);
   const out: Record<string, BuiltinFunction> = {};
   if (!inputDir || !fs.existsSync(inputDir)) return save(context, out);
