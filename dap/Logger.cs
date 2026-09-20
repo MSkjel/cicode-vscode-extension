@@ -141,9 +141,17 @@ namespace CicodeDebugAdapter
             );
             lock (_lock)
             {
-                Console.Error.WriteLine(line);
-                if (_file != null)
-                    _file.WriteLine(line);
+                try
+                {
+                    Console.Error.WriteLine(line);
+                }
+                catch { }
+                try
+                {
+                    if (_file != null)
+                        _file.WriteLine(line);
+                }
+                catch { }
             }
         }
     }

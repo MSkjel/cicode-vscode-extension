@@ -16,9 +16,16 @@ namespace CicodeDebugAdapter
             var header = Encoding.ASCII.GetBytes("Content-Length: " + body.Length + "\r\n\r\n");
             lock (DapState.StdoutLock)
             {
-                DapState.Stdout.Write(header, 0, header.Length);
-                DapState.Stdout.Write(body, 0, body.Length);
-                DapState.Stdout.Flush();
+                try
+                {
+                    DapState.Stdout.Write(header, 0, header.Length);
+                    DapState.Stdout.Write(body, 0, body.Length);
+                    DapState.Stdout.Flush();
+                }
+                catch (System.Exception ex)
+                {
+                    Logger.Warn("DAP send failed: " + ex.Message);
+                }
             }
         }
 
