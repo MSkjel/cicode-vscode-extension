@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 
 namespace CicodeDebugAdapter
@@ -15,56 +16,69 @@ namespace CicodeDebugAdapter
         static StreamWriter _file;
         static readonly object _lock = new object();
 
+        // [Conditional("VERBOSE")] strips the calls, including argument evaluation
+        // (string.Format/concat on hot reader paths), from release builds entirely.
+        [Conditional("VERBOSE")]
         public static void Dap(string s)
         {
             WriteVerbose("DAP ", s);
         }
 
+        [Conditional("VERBOSE")]
         public static void DapIn(string s)
         {
             WriteVerbose("DAP<", s);
         }
 
+        [Conditional("VERBOSE")]
         public static void DapOut(string s)
         {
             WriteVerbose("DAP>", s);
         }
 
+        [Conditional("VERBOSE")]
         public static void Hdr(string s)
         {
             WriteVerbose("HDR ", s);
         }
 
+        [Conditional("VERBOSE")]
         public static void Raw(string s)
         {
             WriteVerbose("RAW ", s);
         }
 
+        [Conditional("VERBOSE")]
         public static void Ipc(string s)
         {
             WriteVerbose("IPC ", s);
         }
 
+        [Conditional("VERBOSE")]
         public static void Pa(string s)
         {
             WriteVerbose("PA  ", s);
         }
 
+        [Conditional("VERBOSE")]
         public static void PaIn(string s)
         {
             WriteVerbose("PA< ", s);
         }
 
+        [Conditional("VERBOSE")]
         public static void PaOut(string s)
         {
             WriteVerbose("PA> ", s);
         }
 
+        [Conditional("VERBOSE")]
         public static void Reader(string s)
         {
             WriteVerbose("RDR ", s);
         }
 
+        [Conditional("VERBOSE")]
         public static void Scada(string s)
         {
             WriteVerbose("VER ", s);
