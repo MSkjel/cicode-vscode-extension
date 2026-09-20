@@ -51,8 +51,10 @@ namespace CicodeDebugAdapter
             bool bWait
         );
 
+        // BOOL ctCancelIO(HANDLE hCTAPI, CTOVERLAPPED* pctOverlapped): a NULL overlapped would
+        // cancel every pending call on the shared handle, so pass the one that timed out.
         [DllImport("CtApi.dll", EntryPoint = "ctCancelIO", SetLastError = true)]
-        static extern bool CtCancelIO(IntPtr hCTAPI);
+        static extern bool CtCancelIO(IntPtr hCTAPI, IntPtr pctOverlapped);
 
         [DllImport("CtApi.dll", EntryPoint = "ctClose", SetLastError = true)]
         static extern bool CtClose(IntPtr hCTAPI);
@@ -62,12 +64,15 @@ namespace CicodeDebugAdapter
         const uint WAIT_TIMEOUT = 0x00000102u;
         const uint CallTimeoutMs = 5000u; // 5-second timeout per ctCicode call
         const uint CancelWaitMs = 1000u; // grace period after ctCancelIO
-        const int ResultBufSize = 256;
+        const int ResultBufSize = 16384; // a result longer than the buffer fails the whole call
         const int OvlSize = 32;
         const int OvlHEventOfs = 16; // byte offset of hEvent field
 
         static IntPtr _handle = IntPtr.Zero;
         static readonly object _lock = new object();
+        static int _inFlight; // native ctCicode calls currently running
+        static int _abandonedOps; // overlapped ops abandoned still-pending (see leakBufs)
+        static volatile bool _closing;
 
         /// <summary>
         /// Execute a Cicode expression and return the result string.
@@ -78,15 +83,28 @@ namespace CicodeDebugAdapter
         /// </summary>
         public static string Execute(string expression)
         {
-            // Only lock for the one-time handle setup; ctCiCode itself is thread-safe
-            // so concurrent overlapped calls  proceed independently rather than queuing behind the stuck call.
-            IntPtr handle;
-            lock (_lock)
+            // Increment before checking _closing so Close() either sees us in flight
+            // or we see _closing set; never both miss.
+            Interlocked.Increment(ref _inFlight);
+            try
             {
-                EnsureOpen();
-                handle = _handle;
+                if (_closing)
+                    throw new Exception("CTAPI connection is closing");
+
+                // Only lock for the one-time handle setup; ctCiCode itself is thread-safe
+                // so concurrent overlapped calls  proceed independently rather than queuing behind the stuck call.
+                IntPtr handle;
+                lock (_lock)
+                {
+                    EnsureOpen();
+                    handle = _handle;
+                }
+                return Resolve(expression.Trim(), handle);
             }
-            return Resolve(expression.Trim(), handle);
+            finally
+            {
+                Interlocked.Decrement(ref _inFlight);
+            }
         }
 
         // Recursively resolve any nested function-call arguments, then call ctCicode.
@@ -114,8 +132,10 @@ namespace CicodeDebugAdapter
                 {
                     // Always quote the resolved result. Cicode will coerce the string to
                     // the expected type automagically :P.
+                    // Cicode's string escape character is ^ (^" = literal quote, ^^ = caret).
+                    // Double the carets first so those introduced for quotes aren't re-doubled.
                     string resolved = Resolve(arg, handle);
-                    args[i] = "\"" + resolved.Replace("\"", "\\\"") + "\"";
+                    args[i] = "\"" + resolved.Replace("^", "^^").Replace("\"", "^\"") + "\"";
                     anyResolved = true;
                 }
                 else
@@ -125,7 +145,7 @@ namespace CicodeDebugAdapter
             }
 
             if (!anyResolved)
-                return RawCall(expr, handle); // nothing nested — call original string unchanged
+                return RawCall(expr, handle); // nothing nested: call original string unchanged
 
             // Rebuild with resolved args and call
             string rebuilt = funcName + "(" + string.Join(",", args) + ")";
@@ -149,8 +169,8 @@ namespace CicodeDebugAdapter
                 for (int i = 0; i < OvlSize; i++)
                     Marshal.WriteByte(ovlBuf, i, 0);
 
-                // Manual-reset event
-                hEvent = CreateEvent(IntPtr.Zero, true, true, IntPtr.Zero);
+                // Manual-reset event, initially non-signaled
+                hEvent = CreateEvent(IntPtr.Zero, true, false, IntPtr.Zero);
                 if (hEvent == IntPtr.Zero)
                     throw new Exception("CreateEvent failed: " + Marshal.GetLastWin32Error());
 
@@ -169,14 +189,15 @@ namespace CicodeDebugAdapter
                     if (waitRes == WAIT_TIMEOUT)
                     {
                         Logger.Warn("ctCicode timeout: " + expr);
-                        CtCancelIO(handle);
+                        CtCancelIO(handle, ovlBuf);
                         uint cancelWait = WaitForSingleObject(hEvent, CancelWaitMs);
                         if (cancelWait != WAIT_OBJECT_0)
                         {
                             Logger.Warn(
-                                "ctCancelIO did not complete — buffers leaked to avoid use-after-free"
+                                "ctCancelIO did not complete, buffers leaked to avoid use-after-free"
                             );
                             leakBufs = true; // native code still owns the buffers
+                            Interlocked.Increment(ref _abandonedOps);
                         }
                         throw new Exception(
                             "ctCicode timed out after " + (CallTimeoutMs / 1000) + "s"
@@ -215,6 +236,11 @@ namespace CicodeDebugAdapter
             for (int i = 0; i < argsStr.Length; i++)
             {
                 char c = argsStr[i];
+                if (inStr && c == '^')
+                {
+                    i++; // Cicode escape (^" ^^ ...): the next char never ends the string
+                    continue;
+                }
                 if (c == '"')
                     inStr = !inStr;
                 if (!inStr)
@@ -240,6 +266,11 @@ namespace CicodeDebugAdapter
             bool inStr = false;
             for (int i = 0; i < s.Length; i++)
             {
+                if (inStr && s[i] == '^')
+                {
+                    i++;
+                    continue;
+                }
                 if (s[i] == '"')
                     inStr = !inStr;
                 if (!inStr && s[i] == ch)
@@ -255,6 +286,11 @@ namespace CicodeDebugAdapter
             bool inStr = false;
             for (int i = openIdx; i < s.Length; i++)
             {
+                if (inStr && s[i] == '^')
+                {
+                    i++;
+                    continue;
+                }
                 if (s[i] == '"')
                     inStr = !inStr;
                 if (!inStr)
@@ -303,23 +339,54 @@ namespace CicodeDebugAdapter
         /// <summary>Close the CTAPI connection. Called when the debug session ends.</summary>
         public static void Close()
         {
-            // Use a timeout so a stuck ctCiCode call on another thread does not block disconnect.
-            if (!Monitor.TryEnter(_lock, 3000))
-                return;
+            _closing = true;
             try
             {
-                if (_handle == IntPtr.Zero)
+                // Wait (bounded) for in-flight ctCicode calls so we never CtClose a handle
+                // another thread is still using inside a native call.
+                for (
+                    int i = 0;
+                    i < 200 && Interlocked.CompareExchange(ref _inFlight, 0, 0) != 0;
+                    i++
+                )
+                    Thread.Sleep(10);
+                // Never CtClose while native code can still touch the session: a straggling
+                // RawCall may yet call CtCancelIO/CtGetOverlappedResult on the handle, and an
+                // abandoned overlapped op (leakBufs) still owns it inside CtApi.dll. Leak the
+                // handle instead; the process exits right after disconnect anyway.
+                bool unsafeToClose =
+                    Interlocked.CompareExchange(ref _inFlight, 0, 0) != 0
+                    || Interlocked.CompareExchange(ref _abandonedOps, 0, 0) != 0;
+                if (unsafeToClose)
+                    Logger.Warn(
+                        "CtApiClient.Close: native call still in flight, leaking CTAPI handle to avoid use-after-free"
+                    );
+
+                // Use a timeout so a stuck ctCiCode call on another thread does not block disconnect.
+                if (!Monitor.TryEnter(_lock, 3000))
                     return;
                 try
                 {
-                    CtClose(_handle);
+                    if (_handle == IntPtr.Zero)
+                        return;
+                    if (!unsafeToClose)
+                    {
+                        try
+                        {
+                            CtClose(_handle);
+                        }
+                        catch { }
+                    }
+                    _handle = IntPtr.Zero;
                 }
-                catch { }
-                _handle = IntPtr.Zero;
+                finally
+                {
+                    Monitor.Exit(_lock);
+                }
             }
             finally
             {
-                Monitor.Exit(_lock);
+                _closing = false;
             }
         }
     }
