@@ -193,12 +193,12 @@
         "cicode.lint.warnMissingSemicolons": {
           "type": "boolean",
           "default": true,
-          "description": "Warn (info) when type declarations lack a trailing semicolon."
+          "description": "Hint when a declaration has no trailing semicolon. Style only: the compiler never requires a semicolon."
         },
         "cicode.lint.warnKeywordCase": {
           "type": "boolean",
           "default": false,
-          "description": "Suggest UPPERCASE keywords/END/IF/etc. Does not auto-fix."
+          "description": "Suggest upper-case keywords (END, IF, ...). Style only: keywords are case-insensitive; upper case is the AVEVA convention. Does not auto-fix."
         },
         "cicode.lint.warnUnusedVariables": {
           "type": "boolean",
