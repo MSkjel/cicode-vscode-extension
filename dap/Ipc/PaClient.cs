@@ -445,23 +445,17 @@ namespace CicodeDebugAdapter
 
         void SendHeartbeat()
         {
-            lock (SendLock)
-            {
-                _outSeqId++;
-                if (_outSeqId == 0)
-                    _outSeqId = 1;
-                SendFrameLocked(
-                    _outSeqId,
-                    BuildMsgPayload(ScadaVersion.HashHb, ScadaVersion.TnHb, ref _sentHbType, null)
-                );
-            }
+            SendMessage(ScadaVersion.HashHb, ScadaVersion.TnHb, ref _sentHbType, null);
         }
 
         void SendAck(uint ackSeqId)
         {
             lock (SendLock)
             {
+                // The server drops the session on an ACK it already has, so never repeat one.
                 if (ackSeqId == _ackedSeqId)
+                    return;
+                if (!_sendReady)
                     return;
                 _ackedSeqId = ackSeqId;
                 SendFrameLocked(
@@ -476,17 +470,29 @@ namespace CicodeDebugAdapter
             }
         }
 
-        // Increments _outSeqId and sends. Caller must hold SendLock.
-        protected uint NextSeqId()
+        /// <summary>
+        /// Send one message in its own frame. The server requires the frame sequence ids to be
+        /// strictly consecutive (a gap or repeat drops the session), so the id is only taken
+        /// once the connection is known to be ready.
+        /// </summary>
+        protected void SendMessage(uint hash, string typeName, ref bool typeSent, byte[] body)
         {
-            _outSeqId++;
-            if (_outSeqId == 0)
-                _outSeqId = 1;
-            return _outSeqId;
+            lock (SendLock)
+            {
+                if (!_sendReady)
+                    throw new InvalidOperationException(GetType().Name + ": send while not connected");
+                _outSeqId++;
+                if (_outSeqId == 0)
+                    _outSeqId = 1;
+                SendFrameLocked(_outSeqId, BuildMsgPayload(hash, typeName, ref typeSent, body));
+            }
         }
 
+        // Caller must hold SendLock.
         protected void SendFrameLocked(uint seqId, byte[] payload)
         {
+            if (!_sendReady)
+                throw new InvalidOperationException(GetType().Name + ": send while not connected");
             var frame = new byte[PA_HDRLEN + payload.Length];
             frame[0] = 0x01;
             frame[1] = 0x02;

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 
 namespace CicodeDebugAdapter
@@ -11,6 +12,9 @@ namespace CicodeDebugAdapter
     /// </summary>
     static class DapHandlers
     {
+        const string FILTER_HW_ERROR = "hardwareError";
+        const int BP_ACK_TIMEOUT_MS = 1500;
+
         public static void HandleRequest(string json)
         {
             var msg = Json.Parse(json);
@@ -22,6 +26,20 @@ namespace CicodeDebugAdapter
 
             Logger.DapIn("cmd=" + cmd + " seq=" + seq);
 
+            try
+            {
+                Dispatch(cmd, seq, args);
+            }
+            catch (Exception ex)
+            {
+                // Always answer: VS Code waits forever for a response that never comes.
+                Logger.Warn("Request '" + cmd + "' failed: " + ex);
+                DapTransport.Response(seq, cmd, false, null, ex.Message);
+            }
+        }
+
+        static void Dispatch(string cmd, int seq, Dictionary<string, object> args)
+        {
             switch (cmd)
             {
                 case "initialize":
@@ -30,11 +48,23 @@ namespace CicodeDebugAdapter
                 case "attach":
                     OnAttach(seq, args);
                     break;
+                case "launch":
+                    DapTransport.Response(
+                        seq,
+                        cmd,
+                        false,
+                        null,
+                        "Only \"attach\" is supported: start the runtime, then attach to it."
+                    );
+                    break;
                 case "configurationDone":
                     OnConfigDone(seq);
                     break;
                 case "setBreakpoints":
                     OnSetBreakpoints(seq, args);
+                    break;
+                case "setExceptionBreakpoints":
+                    OnSetExceptionBreakpoints(seq, args);
                     break;
                 case "continue":
                     OnContinue(seq, args);
@@ -47,6 +77,9 @@ namespace CicodeDebugAdapter
                     break;
                 case "stepOut":
                     OnStep(seq, args, IpcClient.CMD_STEP_OUT);
+                    break;
+                case "pause":
+                    OnPause(seq, args);
                     break;
                 case "threads":
                     OnThreads(seq);
@@ -63,12 +96,15 @@ namespace CicodeDebugAdapter
                 case "evaluate":
                     OnEvaluate(seq, args);
                     break;
+                case "exceptionInfo":
+                    OnExceptionInfo(seq, args);
+                    break;
                 case "disconnect":
                 case "terminate":
-                    OnDisconnect(seq);
+                    OnDisconnect(seq, cmd);
                     break;
                 default:
-                    DapTransport.Response(seq, cmd, true);
+                    DapTransport.Response(seq, cmd, false, null, "unsupported request: " + cmd);
                     break;
             }
         }
@@ -82,44 +118,73 @@ namespace CicodeDebugAdapter
                 "{\"supportsConfigurationDoneRequest\":true,"
                     + "\"supportsTerminateRequest\":true,"
                     + "\"supportsConditionalBreakpoints\":true,"
+                    + "\"supportsExceptionInfoRequest\":true,"
+                    + "\"supportsEvaluateForHovers\":true,"
+                    + "\"exceptionBreakpointFilters\":[{\"filter\":"
+                    + Json.Str(FILTER_HW_ERROR)
+                    + ",\"label\":\"Cicode hardware errors\","
+                    + "\"description\":"
+                    + Json.Str(
+                        "Stop when a Cicode task raises a hardware error. When off, the error is "
+                            + "only written to the Debug Console and the task continues."
+                    )
+                    + ",\"default\":true}],"
                     + "\"supportsStepBack\":false}"
             );
-            DapTransport.Event("initialized");
+            // "initialized" is sent once attach has connected, so VS Code's breakpoint and
+            // configuration requests always arrive after the session exists.
         }
 
         static void OnAttach(int seq, Dictionary<string, object> args)
         {
             string pipeName = args.GetStr("pipeName") ?? "Citect.Debug";
-            DapState.StripQualityTags = args.GetStr("stripQualityTags") != "false";
+            // GetStr stringifies JSON booleans as "False"/"True", so compare case-insensitively.
+            DapState.StripQualityTags = !string.Equals(
+                args.GetStr("stripQualityTags"),
+                "false",
+                StringComparison.OrdinalIgnoreCase
+            );
             try
             {
                 IpcClient.Connect(pipeName);
-                DapState.Attached = true;
-                DapTransport.Response(seq, "attach", true);
-                DapTransport.Output("console", "Connected to SCADA runtime (" + pipeName + ")\n");
-
-                // If configurationDone already arrived before attach, sync pending BPs now.
-                if (DapState.ConfigDone)
-                    SyncBreakpoints();
             }
             catch (Exception ex)
             {
                 Logger.Warn("Attach failed: " + ex.Message);
                 DapTransport.Response(seq, "attach", false, null, ex.Message);
                 DapTransport.Event("terminated");
+                return;
             }
+
+            DapState.Attached = true;
+            DapTransport.Response(seq, "attach", true);
+            DapTransport.Output("console", "Connected to SCADA runtime (" + pipeName + ")\n");
+
+            // Breakpoints that arrived before the session existed.
+            SyncAllBreakpoints(true);
+            DapTransport.Event("initialized");
         }
 
         static void OnConfigDone(int seq)
         {
-            DapTransport.Response(seq, "configurationDone", true);
-            if (!DapState.Attached)
-            {
-                Logger.Dap("configurationDone ignored. not attached");
-                return;
-            }
-            SyncBreakpoints();
             DapState.ConfigDone = true;
+            DapTransport.Response(seq, "configurationDone", true);
+        }
+
+        // Stable DAP ids per file:line, so "breakpoint" change events can refer to them.
+        static readonly Dictionary<string, int> _dapBpIds = new Dictionary<string, int>();
+        static int _nextDapBpId = 1;
+
+        static int DapBpId(string key, int line)
+        {
+            string k = key + ":" + line;
+            int id;
+            lock (_dapBpIds)
+            {
+                if (!_dapBpIds.TryGetValue(k, out id))
+                    _dapBpIds[k] = id = _nextDapBpId++;
+            }
+            return id;
         }
 
         static void OnSetBreakpoints(int seq, Dictionary<string, object> args)
@@ -137,70 +202,34 @@ namespace CicodeDebugAdapter
                 // Fallback for older-style requests that send a flat "lines" array
                 var fallback = args.GetIntList("lines");
                 foreach (int l in fallback)
-                    specs.Add(new Json.BpSpec { Line = l });
+                    specs.Add(new Json.BpSpec { Line = l, Enabled = true });
             }
 
             var lines = new List<int>(); // enabled lines only, sent to the runtime
             var conditions = new Dictionary<int, string>();
             foreach (var s in specs)
             {
-                if (s.Enabled)
+                if (s.Enabled && !lines.Contains(s.Line))
                     lines.Add(s.Line);
                 if (s.Condition != null)
                     conditions[s.Line] = s.Condition;
             }
 
-            string key = srcPath.ToLowerInvariant();
-
-            List<int> oldLines;
-            bool needSync;
+            string key = DebugClient.NormalizePath(srcPath);
             lock (DapState.SessionLock)
             {
-                // Capture old state before updating so we can diff below.
-                DapState.PendingBps.TryGetValue(key, out oldLines);
-                oldLines = oldLines != null ? new List<int>(oldLines) : new List<int>();
-
                 DapState.PendingBps[key] = lines;
                 DapState.BpPaths[key] = srcPath;
                 DapState.BpConditions[key] = conditions;
-                needSync = DapState.Attached && DapState.ConfigDone;
             }
 
-            if (needSync)
+            HashSet<int> acked = null;
+            if (DapState.Attached && srcPath.Length > 0)
             {
-                bool anyRemoved = false;
-                foreach (int l in oldLines)
-                    if (!lines.Contains(l))
-                    {
-                        anyRemoved = true;
-                        break;
-                    }
-
-                if (anyRemoved)
-                {
-                    // CMD_BP_CLR via IPC does not restore patched bytecode.
-                    // Disconnect + reconnect causes Citect32 to clear all runtime BPs,
-                    // then re-register only the BPs still active across all files.
-                    // Its a hack, but it works.
-                    if (DapState.IsStopped)
-                    {
-                        // Currently paused at a BP. Defer reconnect until the user continues
-                        // so we don't yank the connection out from under a paused session.
-                        DapState.PendingReconnect = true;
-                    }
-                    else
-                    {
-                        IpcClient.Reconnect();
-                        SyncBreakpoints();
-                    }
-                }
-                else
-                {
-                    // Only additions. No reconnect needed, just set the new lines.
-                    foreach (int l in lines)
-                        if (!oldLines.Contains(l))
-                            IpcClient.SendBp(IpcClient.CMD_BP_SET, srcPath, l);
-                }
+                // Adds and removes individually: the runtime clears a breakpoint by the id it
+                // returned when it was set, so no reconnect is needed (and paused threads stay put).
+                IpcClient.SyncFileBreakpoints(srcPath, lines);
+                acked = IpcClient.WaitForBpAcks(srcPath, lines, BP_ACK_TIMEOUT_MS);
             }
 
             var bps = new StringBuilder("[");
@@ -212,100 +241,165 @@ namespace CicodeDebugAdapter
                     specs[i].Condition != null
                         ? IpcClient.ValidateCondition(specs[i].Condition)
                         : null;
-                bool verified = DapState.Attached && condErr == null;
+                string msg = condErr;
+                bool verified;
+                if (!DapState.Attached)
+                {
+                    verified = false;
+                    msg = msg ?? "Not attached to the runtime yet.";
+                }
+                else
+                {
+                    verified = condErr == null && acked != null && acked.Contains(specs[i].Line);
+                    if (msg == null && !verified)
+                        msg = "The runtime did not confirm this breakpoint.";
+                }
                 bps.Append("{\"id\":")
-                    .Append(i + 1)
+                    .Append(DapBpId(key, specs[i].Line))
                     .Append(",\"verified\":")
                     .Append(verified ? "true" : "false")
                     .Append(",\"line\":")
                     .Append(specs[i].Line);
-                if (condErr != null)
-                    bps.Append(",\"message\":").Append(Json.Str(condErr));
+                if (msg != null)
+                    bps.Append(",\"message\":").Append(Json.Str(msg));
                 bps.Append("}");
             }
             bps.Append("]");
             DapTransport.Response(seq, "setBreakpoints", true, "{\"breakpoints\":" + bps + "}");
         }
 
+        /// <summary>Push every known breakpoint to the runtime (after attach).</summary>
+        static void SyncAllBreakpoints(bool announce)
+        {
+            var files = new List<KeyValuePair<string, List<int>>>();
+            var conds = new Dictionary<string, Dictionary<int, string>>();
+            lock (DapState.SessionLock)
+            {
+                foreach (var kv in DapState.PendingBps)
+                {
+                    string path = DapState.BpPaths.ContainsKey(kv.Key) ? DapState.BpPaths[kv.Key] : kv.Key;
+                    files.Add(new KeyValuePair<string, List<int>>(path, new List<int>(kv.Value)));
+                    Dictionary<int, string> c;
+                    if (DapState.BpConditions.TryGetValue(kv.Key, out c))
+                        conds[path] = c;
+                }
+            }
+            foreach (var kv in files)
+                IpcClient.SyncFileBreakpoints(kv.Key, kv.Value);
+            if (!announce)
+                return;
+            foreach (var kv in files)
+            {
+                HashSet<int> acked = IpcClient.WaitForBpAcks(kv.Key, kv.Value, BP_ACK_TIMEOUT_MS);
+                string key = DebugClient.NormalizePath(kv.Key);
+                foreach (int line in kv.Value)
+                {
+                    Dictionary<int, string> c;
+                    string cond;
+                    bool condOk =
+                        !conds.TryGetValue(kv.Key, out c)
+                        || !c.TryGetValue(line, out cond)
+                        || IpcClient.ValidateCondition(cond) == null;
+                    bool verified = condOk && acked.Contains(line);
+                    DapTransport.Event(
+                        "breakpoint",
+                        "{\"reason\":\"changed\",\"breakpoint\":{\"id\":"
+                            + DapBpId(key, line)
+                            + ",\"verified\":"
+                            + (verified ? "true" : "false")
+                            + ",\"line\":"
+                            + line
+                            + "}}"
+                    );
+                }
+            }
+        }
+
+        static void OnSetExceptionBreakpoints(int seq, Dictionary<string, object> args)
+        {
+            bool hw = false;
+            object v;
+            var list = args.TryGetValue("filters", out v) ? v as System.Collections.ArrayList : null;
+            if (list != null)
+                foreach (object f in list)
+                    if (f != null && f.ToString() == FILTER_HW_ERROR)
+                        hw = true;
+            DapState.BreakOnHardwareErrors = hw;
+            DapTransport.Response(seq, "setExceptionBreakpoints", true);
+        }
+
         static void OnContinue(int seq, Dictionary<string, object> args)
         {
-            int tid = args.GetInt("threadId", -1);
-
-            DapState.IsStopped = false;
-            DapState.SteppingThread = -1;
-            if (tid > 0)
-                lock (DapState.SessionLock)
-                {
-                    DapState.ThreadFile.Remove(tid);
-                    DapState.ThreadLine.Remove(tid);
-                }
-
-            if (DapState.PendingReconnect)
-            {
-                // A BP was removed while paused. Now that the user has continued,
-                // reconnect to clear runtime BPs and re-register the active ones.
-                DapState.PendingReconnect = false;
-                IpcClient.Reconnect(); // IsStopped already false. no duplicate "continued" event
-                SyncBreakpoints();
-                DapTransport.Response(seq, "continue", true, "{\"allThreadsContinued\":true}");
-                return;
-            }
-
-            // CONTINUE_ALL runs until the next breakpoint (not just one step like RESUME_THREAD)
-            IpcClient.SendCmd(
-                IpcClient.CMD_CONTINUE_ALL,
-                BitConverter.GetBytes(unchecked((uint)-1))
-            );
+            // CONTINUE_ALL runs every suspended task until its next breakpoint.
+            IpcClient.ContinueAll();
             DapTransport.Response(seq, "continue", true, "{\"allThreadsContinued\":true}");
         }
 
         static void OnStep(int seq, Dictionary<string, object> args, uint stepCmd)
         {
-            int tid = args.GetInt("threadId", 0);
-            if (tid == 0)
-                tid = DapState.Threads.Count > 0 ? new List<int>(DapState.Threads)[0] : 1;
-
-            DapState.IsStopped = false;
-            DapState.SteppingThread = tid;
-
             string stepName =
                 stepCmd == IpcClient.CMD_STEP_OVER ? "next"
                 : stepCmd == IpcClient.CMD_STEP_INTO ? "stepIn"
                 : "stepOut";
 
-            if (DapState.PendingReconnect)
+            int tid = args.GetInt("threadId", 0);
+            if (tid <= 0 || !DapState.IsThreadPaused(tid))
             {
-                // A BP was removed while paused. Reconnect now to clear runtime BPs.
-                // Can't step after a reconnect (all threads resume), so treat as continue.
-                DapState.PendingReconnect = false;
-                DapState.SteppingThread = -1;
-                IpcClient.Reconnect();
-                SyncBreakpoints();
-                DapTransport.Response(seq, stepName, true);
+                lock (DapState.SessionLock)
+                {
+                    tid = -1;
+                    foreach (int t in DapState.PausedThreads)
+                    {
+                        tid = t;
+                        break;
+                    }
+                }
+            }
+            if (tid <= 0)
+            {
+                DapTransport.Response(seq, stepName, false, null, "No Cicode thread is paused.");
                 return;
             }
 
-            IpcClient.SendCmd(stepCmd, BitConverter.GetBytes((uint)tid));
+            IpcClient.Step(tid, stepCmd);
             DapTransport.Response(seq, stepName, true);
+        }
+
+        static void OnPause(int seq, Dictionary<string, object> args)
+        {
+            // The runtime cannot suspend a chosen task: Break suspends whichever background
+            // task executes the next Cicode statement.
+            IpcClient.Pause();
+            DapTransport.Response(seq, "pause", true);
+            DapTransport.Output(
+                "console",
+                "Pause requested: the runtime stops at the next Cicode statement any background task executes.\n"
+            );
         }
 
         static void OnThreads(int seq)
         {
             var sb = new StringBuilder("[");
             bool first = true;
+            var ids = new List<int>();
             lock (DapState.SessionLock)
             {
-                foreach (int tid in DapState.Threads)
-                {
-                    if (!first)
-                        sb.Append(',');
-                    sb.Append("{\"id\":")
-                        .Append(tid)
-                        .Append(",\"name\":")
-                        .Append(Json.Str("Cicode Thread " + tid))
-                        .Append("}");
-                    first = false;
-                }
+                ids.AddRange(DapState.Threads);
+                foreach (int t in DapState.PausedThreads)
+                    if (!ids.Contains(t))
+                        ids.Add(t);
+            }
+            ids.Sort();
+            foreach (int tid in ids)
+            {
+                if (!first)
+                    sb.Append(',');
+                sb.Append("{\"id\":")
+                    .Append(tid)
+                    .Append(",\"name\":")
+                    .Append(Json.Str(ThreadName(tid)))
+                    .Append("}");
+                first = false;
             }
             if (first)
                 sb.Append("{\"id\":1,\"name\":\"Cicode\"}"); // no threads known yet
@@ -313,12 +407,48 @@ namespace CicodeDebugAdapter
             DapTransport.Response(seq, "threads", true, "{\"threads\":" + sb + "}");
         }
 
-        // Frame id encoding: FRAME_ID_BASE + frameIdx (frameIdx 0 = innermost)
-        // Locals varRef encoding:  LOCALS_REF_BASE + frameIdx
+        static string ThreadName(int tid)
+        {
+            // Name the task after its outermost function when the stack is known.
+            lock (DapState.VarsLock)
+            {
+                List<CicodeFrame> f;
+                if (DapState.FramesByThread.TryGetValue(tid, out f) && f.Count > 0)
+                {
+                    string root = f[f.Count - 1].Name;
+                    if (!string.IsNullOrEmpty(root))
+                        return "Cicode thread " + tid + " (" + root + ")";
+                }
+            }
+            return "Cicode thread " + tid;
+        }
+
+        // Frame id encoding:       FRAME_ID_BASE + (tid << 8 | frameIdx) (frameIdx 0 = innermost)
+        // Locals varRef encoding:  LOCALS_REF_BASE + (tid << 8 | frameIdx)
         // StepWatch varRef = 1 (frame-independent)
+        // Embedding the thread id lets stackTrace -> scopes -> variables round-trip
+        // to the right thread's frames (DapState.FramesByThread).
         const int FRAME_ID_BASE = 1000;
         const int LOCALS_REF_BASE = 2000;
         const int STEP_WATCH_REF = 1;
+        const int ENC_TID_MAX = 0x3FFFFF; // Citect thread handles are small ints in practice
+        const int ENC_FRAME_MAX = 0xFF; // frames rendered per thread
+
+        static bool CanEncodeTid(int tid)
+        {
+            return tid > 0 && tid <= ENC_TID_MAX;
+        }
+
+        static int EncodeFrame(int tid, int frameIdx)
+        {
+            return CanEncodeTid(tid) ? ((tid << 8) | frameIdx) : frameIdx;
+        }
+
+        static void DecodeFrame(int enc, out int tid, out int frameIdx)
+        {
+            tid = enc >> 8;
+            frameIdx = tid > 0 ? (enc & 0xFF) : enc;
+        }
 
         static void OnStackTrace(int seq, Dictionary<string, object> args)
         {
@@ -328,21 +458,20 @@ namespace CicodeDebugAdapter
             int line;
             DapState.TryGetThreadLocation(tid, out file, out line);
 
-            // Wait briefly for the runtime's locals/stack payload to arrive
-            // (PrefetchVars fires CMD_GET_LOCALS_LIVE on stopped events).
-            DapState.LocalsReady.Wait(500);
+            // Wait briefly for this thread's stack payload (PrefetchVars asked for it on stop).
+            List<CicodeFrame> frames = DapState.WaitForLocals(tid, 700) ?? new List<CicodeFrame>();
 
-            List<CicodeFrame> frames;
-            lock (DapState.VarsLock)
-            {
-                frames = new List<CicodeFrame>(DapState.Frames);
-            }
+            int renderCount = frames.Count;
+            if (renderCount > ENC_FRAME_MAX + 1)
+                renderCount = ENC_FRAME_MAX + 1;
 
             var sb = new StringBuilder("[");
-            if (frames.Count == 0)
+            if (renderCount == 0)
             {
                 // Fallback: synthetic single frame from the thread location.
-                sb.Append("{\"id\":").Append(FRAME_ID_BASE).Append(",\"name\":\"Cicode\"");
+                sb.Append("{\"id\":")
+                    .Append(FRAME_ID_BASE + EncodeFrame(tid, 0))
+                    .Append(",\"name\":\"Cicode\"");
                 if (file != null && line > 0)
                     sb.Append(",\"source\":{\"path\":")
                         .Append(Json.Str(file))
@@ -354,13 +483,13 @@ namespace CicodeDebugAdapter
             }
             else
             {
-                for (int i = 0; i < frames.Count; i++)
+                for (int i = 0; i < renderCount; i++)
                 {
                     if (i > 0) sb.Append(',');
                     string name = frames[i].Name;
                     if (string.IsNullOrEmpty(name)) name = "Cicode";
                     sb.Append("{\"id\":")
-                        .Append(FRAME_ID_BASE + i)
+                        .Append(FRAME_ID_BASE + EncodeFrame(tid, i))
                         .Append(",\"name\":")
                         .Append(Json.Str(name));
                     // Only the innermost frame has a known source location.
@@ -370,13 +499,13 @@ namespace CicodeDebugAdapter
                             .Append("},\"line\":")
                             .Append(line);
                     else
-                        sb.Append(",\"line\":0");
+                        sb.Append(",\"line\":0,\"presentationHint\":\"subtle\"");
                     sb.Append(",\"column\":0}");
                 }
             }
             sb.Append("]");
 
-            int total = frames.Count > 0 ? frames.Count : 1;
+            int total = renderCount > 0 ? renderCount : 1;
             DapTransport.Response(
                 seq,
                 "stackTrace",
@@ -387,17 +516,20 @@ namespace CicodeDebugAdapter
 
         static void OnScopes(int seq, Dictionary<string, object> args)
         {
-            if (!DapState.IsStopped)
+            int frameId = args.GetInt("frameId", FRAME_ID_BASE);
+            int enc = frameId - FRAME_ID_BASE;
+            if (enc < 0) enc = 0;
+            int tid, frameIdx;
+            DecodeFrame(enc, out tid, out frameIdx);
+            if (tid > 0 ? !DapState.IsThreadPaused(tid) : !DapState.IsStopped)
             {
                 DapTransport.Response(seq, "scopes", true, "{\"scopes\":[]}");
                 return;
             }
 
-            int frameId = args.GetInt("frameId", FRAME_ID_BASE);
-            int frameIdx = frameId - FRAME_ID_BASE;
-            if (frameIdx < 0) frameIdx = 0;
-
-            int localsRef = LOCALS_REF_BASE + frameIdx;
+            // Carry the tid-encoded frame value straight into the locals varRef; OnVariables
+            // decodes it. No collision with STEP_WATCH_REF since LOCALS_REF_BASE = 2000.
+            int localsRef = LOCALS_REF_BASE + enc;
 
             DapTransport.Response(
                 seq,
@@ -412,34 +544,40 @@ namespace CicodeDebugAdapter
             );
         }
 
+        static Dictionary<string, string> FrameLocals(int tid, int frameIdx, int waitMs)
+        {
+            List<CicodeFrame> frames = DapState.WaitForLocals(tid, waitMs);
+            if (frames == null || frameIdx < 0 || frameIdx >= frames.Count)
+                return null;
+            return frames[frameIdx].Locals;
+        }
+
         static void OnVariables(int seq, Dictionary<string, object> args)
         {
             int varRef = args.GetInt("variablesReference");
 
             if (varRef == STEP_WATCH_REF)
             {
-                RespondWithVariables(
+                DapState.StepWatchReady.Wait(400);
+                Dictionary<string, string> sw;
+                lock (DapState.VarsLock)
+                    sw = new Dictionary<string, string>(DapState.StepWatchVars);
+                DapTransport.Response(
                     seq,
-                    DapState.StepWatchReady,
-                    400,
-                    DapState.StepWatchVars,
-                    "(none)",
-                    "No step-watch variables configured in runtime"
+                    "variables",
+                    true,
+                    "{\"variables\":"
+                        + BuildVarArray(sw, "(none)", "No global or module variables used by this task yet")
+                        + "}"
                 );
                 return;
             }
 
             if (varRef >= LOCALS_REF_BASE)
             {
-                int frameIdx = varRef - LOCALS_REF_BASE;
-                DapState.LocalsReady.Wait(500);
-                Dictionary<string, string> vars;
-                lock (DapState.VarsLock)
-                {
-                    vars = (frameIdx >= 0 && frameIdx < DapState.Frames.Count)
-                        ? new Dictionary<string, string>(DapState.Frames[frameIdx].Locals)
-                        : new Dictionary<string, string>();
-                }
+                int tid, frameIdx;
+                DecodeFrame(varRef - LOCALS_REF_BASE, out tid, out frameIdx);
+                var vars = FrameLocals(tid, frameIdx, 500) ?? new Dictionary<string, string>();
                 DapTransport.Response(
                     seq,
                     "variables",
@@ -447,7 +585,7 @@ namespace CicodeDebugAdapter
                     "{\"variables\":" + BuildVarArray(
                         vars,
                         "(pending)",
-                        "Local variable data not yet received. check cicode-dap.log for 0x102a response"
+                        "Local variable data not yet received from the runtime"
                     ) + "}"
                 );
                 return;
@@ -456,32 +594,41 @@ namespace CicodeDebugAdapter
             DapTransport.Response(seq, "variables", true, "{\"variables\":[]}");
         }
 
-        static void RespondWithVariables(
-            int seq,
-            ManualResetEventSlim ready,
-            int timeoutMs,
-            Dictionary<string, string> source,
-            string emptyName,
-            string emptyValue
-        )
-        {
-            ready.Wait(timeoutMs);
-            Dictionary<string, string> vars;
-            lock (DapState.VarsLock)
-            {
-                vars = new Dictionary<string, string>(source);
-            }
-            DapTransport.Response(
-                seq,
-                "variables",
-                true,
-                "{\"variables\":" + BuildVarArray(vars, emptyName, emptyValue) + "}"
-            );
-        }
+        static readonly Regex IdentRx = new Regex(@"^[A-Za-z_][A-Za-z0-9_]*$");
 
         static void OnEvaluate(int seq, Dictionary<string, object> args)
         {
-            string expr = args.GetStr("expression") ?? "";
+            string expr = (args.GetStr("expression") ?? "").Trim();
+            string context = args.GetStr("context") ?? "repl";
+            int frameId = args.GetInt("frameId", -1);
+
+            // A plain identifier that is a local of the selected frame: answer from the stack
+            // snapshot (the runtime evaluates CtAPI expressions outside the paused task).
+            if (IdentRx.IsMatch(expr) && frameId >= FRAME_ID_BASE)
+            {
+                int tid, frameIdx;
+                DecodeFrame(frameId - FRAME_ID_BASE, out tid, out frameIdx);
+                var locals = FrameLocals(tid, frameIdx, 300);
+                if (locals != null)
+                    foreach (var kv in locals)
+                        if (string.Equals(kv.Key, expr, StringComparison.OrdinalIgnoreCase))
+                        {
+                            DapTransport.Response(
+                                seq,
+                                "evaluate",
+                                true,
+                                "{\"result\":" + Json.Str(kv.Value) + ",\"variablesReference\":0}"
+                            );
+                            return;
+                        }
+            }
+
+            if (context == "hover")
+            {
+                // Never run Cicode for a hover: an identifier may be a function that would execute.
+                DapTransport.Response(seq, "evaluate", false, null, "not a local variable");
+                return;
+            }
 
             ThreadPool.QueueUserWorkItem(_ =>
             {
@@ -504,26 +651,48 @@ namespace CicodeDebugAdapter
             });
         }
 
-        static void OnDisconnect(int seq)
+        static void OnExceptionInfo(int seq, Dictionary<string, object> args)
         {
-            DapTransport.Response(seq, "disconnect", true);
-            IpcClient.Disconnect();
-            DapState.Reset();
+            int tid = args.GetInt("threadId", -1);
+            DapState.ErrorInfo e = DapState.GetErrorInfo(tid);
+            if (e == null)
+            {
+                DapTransport.Response(seq, "exceptionInfo", false, null, "No Cicode hardware error on this thread.");
+                return;
+            }
+            string exceptionId = "Hardware error " + e.Code;
+            var desc = new StringBuilder();
+            desc.Append(string.IsNullOrEmpty(e.Message) ? "Cicode hardware error" : e.Message);
+            if (!string.IsNullOrEmpty(e.ErrPage))
+                desc.Append(" (raised by ").Append(e.ErrPage).Append(')');
+            if (!string.IsNullOrEmpty(e.ErrDesc))
+                desc.Append(" in ").Append(e.ErrDesc);
+            var trace = new StringBuilder();
+            if (!string.IsNullOrEmpty(e.Detail))
+                trace.Append(e.Detail.Replace("\r", "")).Append('\n');
+            if (e.File != null)
+                trace.Append("at ").Append(e.File).Append(':').Append(e.Line).Append('\n');
+            if (e.PauseLine > 0 && e.PauseLine != e.Line)
+                trace.Append("The task is suspended before line ").Append(e.PauseLine)
+                    .Append("; stepping continues from there.\n");
+            DapTransport.Response(
+                seq,
+                "exceptionInfo",
+                true,
+                "{\"exceptionId\":" + Json.Str(exceptionId)
+                    + ",\"description\":" + Json.Str(desc.ToString())
+                    + ",\"breakMode\":\"always\""
+                    + ",\"details\":{\"message\":" + Json.Str(e.Text ?? desc.ToString())
+                    + ",\"typeName\":\"Cicode hardware error\""
+                    + ",\"stackTrace\":" + Json.Str(trace.ToString().TrimEnd()) + "}}"
+            );
         }
 
-        internal static void SyncBreakpoints()
+        static void OnDisconnect(int seq, string cmd)
         {
-            lock (DapState.SessionLock)
-            {
-                foreach (var kv in DapState.PendingBps)
-                {
-                    string path = DapState.BpPaths.ContainsKey(kv.Key)
-                        ? DapState.BpPaths[kv.Key]
-                        : kv.Key;
-                    foreach (int line in kv.Value)
-                        IpcClient.SendBp(IpcClient.CMD_BP_SET, path, line);
-                }
-            }
+            DapTransport.Response(seq, cmd, true);
+            IpcClient.Disconnect();
+            DapState.Reset();
         }
 
         static string BuildVarArray(

@@ -1,6 +1,6 @@
 @echo off
 :: Build cicode-debug-adapter.exe using the .NET Framework 4.x x86 compiler.
-:: /platform:x86 is mandatory - string.GetHashCode() must match CtCicode.exe (x86 .NET 4.x).
+:: /platform:x86 is mandatory - message type hashes (string.GetHashCode()) must match the runtime's x86 .NET 4.x values, and CtApi.dll is 32-bit.
 :: Release build: no VERBOSE define, so only WRN entries are logged. No log file is created.
 setlocal
 cd /d "%~dp0"
@@ -12,6 +12,7 @@ set OUT=cicode-debug-adapter.exe
   /platform:x86 ^
   /optimize ^
   /r:System.Web.Extensions.dll ^
+  /r:System.Management.dll ^
   /out:%OUT% ^
   Logger.cs ^
   Program.cs ^
