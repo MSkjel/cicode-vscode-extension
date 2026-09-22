@@ -193,12 +193,12 @@ function generateCommentedOutBlock(indent: string, varName: string): string {
       `// END`,
     ],
     [
-      `// Debug output — remove before production deployment`,
+      `// Debug output: remove before production deployment`,
       `// TraceMsg("${varName} = " + IntToStr(${varName}));`,
       `// TraceMsg("Stack depth: " + IntToStr(StackDepth()));`,
     ],
     [
-      `/* Old retry logic — superseded by WatchdogRetry helper`,
+      `/* Old retry logic, superseded by WatchdogRetry helper`,
       ` * INT iRetry;`,
       ` * FOR iRetry = 0 TO 3 DO`,
       ` *     IF WriteTag("OutputTag", ${varName}) = 0 THEN`,
