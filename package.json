@@ -16,7 +16,7 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "workspaceContains:**/*.ci"
+    "workspaceContains:**/*.[cC][iI]"
   ],
   "contributes": {
     "languages": [

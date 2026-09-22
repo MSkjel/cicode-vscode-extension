@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { findWorkspaceFiles, cfg } from "../config";
+import { CI_FILE_GLOB } from "../shared/globs";
 
 export function makeSideBar() {
   const disposables: vscode.Disposable[] = [];
@@ -9,9 +10,14 @@ export function makeSideBar() {
     vscode.window.registerTreeDataProvider("cicodeExplorer", provider),
   );
 
-  const watcher = vscode.workspace.createFileSystemWatcher("**/*.ci");
+  // The tree lists files only, so content changes don't affect it.
+  const watcher = vscode.workspace.createFileSystemWatcher(
+    CI_FILE_GLOB,
+    false,
+    true,
+    false,
+  );
   watcher.onDidCreate(() => provider.refresh());
-  watcher.onDidChange(() => provider.refresh());
   watcher.onDidDelete(() => provider.refresh());
   disposables.push(watcher);
 
@@ -87,7 +93,7 @@ class CicodeExplorerProvider implements vscode.TreeDataProvider<CicodeExplorerIt
   private async getCiDirs(): Promise<Set<string>> {
     if (this.ciDirs) return this.ciDirs;
 
-    const uris = await findWorkspaceFiles("**/*.ci", cfg);
+    const uris = await findWorkspaceFiles(CI_FILE_GLOB, cfg);
     const dirs = new Set<string>();
     const files = new Set<string>();
     for (const uri of uris) {
