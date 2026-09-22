@@ -17,11 +17,19 @@ export function makeStatusBar(indexer: Indexer): vscode.Disposable {
     item.tooltip = "Click to reindex workspace";
   };
 
-  const subscription = indexer.onIndexed(refresh);
+  // Debounce refreshes: onIndexed can fire in bursts (per-file reindexes,
+  // mass deletes/renames), and each refresh rebuilds the merged function map
+  // and recounts all variables just to update a label.
+  let timer: NodeJS.Timeout | undefined;
+  const subscription = indexer.onIndexed(() => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(refresh, 1000);
+  });
   refresh();
 
   return {
     dispose(): void {
+      if (timer) clearTimeout(timer);
       subscription.dispose();
       item.dispose();
     },
