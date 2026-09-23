@@ -34,6 +34,57 @@ export const CONTROL_KEYWORDS = new Set([
   "IF",
 ]);
 
+// Name characters as the compiler reads them: letters of the ANSI code page
+// (cp1252, as the code points its bytes decode to), `_`, digits and `\`.
+
+/** RegExp class body: characters that can start a name (ASCII and cp1252 letters, `_`) */
+export const NAME_START_CHARS =
+  "A-Za-z_\\u00AA\\u00B5\\u00BA\\u00C0-\\u00D6\\u00D8-\\u00F6\\u00F8-\\u00FF\\u0152\\u0153\\u0160\\u0161\\u0178\\u017D\\u017E\\u0192";
+
+/** RegExp class body: characters inside a name (start characters, digits incl. ² ³ ¹, `\`) */
+export const NAME_CHARS = `${NAME_START_CHARS}0-9\\u00B2\\u00B3\\u00B9\\\\`;
+
+/** RegExp source matching one name, e.g. `nTempø` or `a\b` */
+export const NAME_PATTERN = `[${NAME_START_CHARS}][${NAME_CHARS}]*`;
+
+/** The compiler's reserved words (case-insensitive). LOCAL, TRUE and FALSE are not among them. */
+export const RESERVED_WORDS = new Set([
+  "AND",
+  "BITAND",
+  "BITOR",
+  "BITXOR",
+  "CASE",
+  "CICODE",
+  "CIVBA",
+  "DO",
+  "ELSE",
+  "END",
+  "FOR",
+  "FUNCTION",
+  "GLOBAL",
+  "IF",
+  "INT",
+  "IS",
+  "MOD",
+  "MODULE",
+  "NOP",
+  "NOT",
+  "OBJECT",
+  "OR",
+  "PRIVATE",
+  "PUBLIC",
+  "QUALITY",
+  "REAL",
+  "RETURN",
+  "SELECT",
+  "STRING",
+  "THEN",
+  "TIMESTAMP",
+  "TO",
+  "VAR",
+  "WHILE",
+]);
+
 /** Block-starting keywords that increase nesting depth */
 export const BLOCK_START_KEYWORDS = new Set([
   "FUNCTION",
@@ -104,6 +155,13 @@ export const MISC_KEYWORDS = new Set([
   "TRUE",
   "FALSE",
 ]);
+
+/**
+ * Labels from the Include project's labels.DBF (TRUE = 1, FALSE = 0). Not
+ * keywords: every project compiles with them, so they are known even when
+ * the Include folder is not in the workspace.
+ */
+export const INCLUDE_BOOL_LABELS = new Set(["TRUE", "FALSE"]);
 
 /** Types valid in Cicode variable and function declarations */
 export const CICODE_TYPES = new Set([

@@ -1,37 +1,37 @@
+import * as path from "path";
 import * as vscode from "vscode";
-import { debounce, error } from "../../shared/utils";
-import { CICODE_TYPES_PATTERN } from "../../shared/constants";
-
-const RETURN_TYPE_SAME_LINE_RE = new RegExp(
-  `\\b(${CICODE_TYPES_PATTERN})\\s*$`,
-  "i",
-);
-const RETURN_TYPE_PREV_LINE_RE = new RegExp(
-  `^(?:(?:private|public|global|module|const|static)\\s+)*(${CICODE_TYPES_PATTERN})\\s*$`,
-  "i",
-);
 import {
-  TYPE_RE,
-  splitDeclNames,
+  debouncePerKey,
+  error,
+  type PerKeyDebounced,
+  warn,
+} from "../../shared/utils";
+import {
   buildIgnoreSpans,
-  inSpan,
-  stripLineComment,
+  buildLineIndex,
+  lineAtOffset,
+  type LineIndex,
+  mergeSpans,
+  nameKey,
   extractLeadingTripleSlashDoc,
   extractSlashDoubleStarDoc,
   parseDocLines,
 } from "../../shared/textUtils";
+import {
+  CI_FILE_GLOB,
+  LABELS_DBF_GLOB,
+  LOCVAR_DBF_GLOB,
+} from "../../shared/globs";
 import { getBuiltins } from "../builtins/builtins";
-import { splitParamsTopLevel } from "../../shared/parseHelpers";
 import type { FunctionInfo, VariableEntry } from "../../shared/types";
 import type { FunctionRange } from "./types";
 import { parseLabelsDbf, type LabelRecord } from "./labelsReader";
 import { parseLocvarDbf } from "./localVarsParser";
+import { blankComments, parseCicode, type ParsedFunction } from "./parser";
+import { locateIncludeLabels } from "./includeProject";
+import { findOpenDocument, isIndexableUri, readSourceText } from "./sourceText";
 import { findWorkspaceFiles } from "../../config";
 
-/**
- * Indexes Cicode files to extract function definitions, variable declarations,
- * and their locations for use by other language features.
- */
 class FileIgnoreSpans {
   private _withHeaders?: Array<[number, number]>;
 
@@ -41,10 +41,10 @@ class FileIgnoreSpans {
   ) {}
 
   get withHeaders(): Array<[number, number]> {
-    return (this._withHeaders ??= [
+    return (this._withHeaders ??= mergeSpans([
       ...this.withoutHeaders,
       ...this._headerSpans,
-    ].sort((a, b) => a[0] - b[0]));
+    ]));
   }
 
   get(
@@ -54,10 +54,155 @@ class FileIgnoreSpans {
   }
 }
 
+/** Minimal document view accepted by the indexing pipeline, so files can be
+ *  indexed from disk without opening a TextDocument. */
+interface IndexableDocument {
+  readonly uri: vscode.Uri;
+  getText(): string;
+  positionAt(offset: number): vscode.Position;
+}
+
+/** IndexableDocument backed by a plain string read from disk. */
+class FileDocument implements IndexableDocument {
+  private _lineIndex?: LineIndex;
+
+  constructor(
+    readonly uri: vscode.Uri,
+    private readonly _text: string,
+  ) {}
+
+  /** Built lazily (a content-hash hit never needs it) and shared with the
+   *  indexer so the text is only split into lines once. */
+  get lineIndex(): LineIndex {
+    return (this._lineIndex ??= buildLineIndex(this._text));
+  }
+
+  getText(): string {
+    return this._text;
+  }
+
+  positionAt(offset: number): vscode.Position {
+    const li = this.lineIndex;
+    const off = Math.max(0, Math.min(offset, this._text.length));
+    const line = lineAtOffset(li, off);
+    return new vscode.Position(line, off - li.starts[line]);
+  }
+}
+
+type SourceKind = "ci" | "labels" | "locvar";
+
+/** Which kind of indexer source a path is, judged by its name (the compiler
+ *  ignores case: FOO.CI and LABELS.DBF count). */
+function sourceKind(p: string): SourceKind | undefined {
+  const base = path.basename(p).toLowerCase();
+  if (base.endsWith(".ci")) return "ci";
+  if (base === "labels.dbf") return "labels";
+  if (base === "locvar.dbf") return "locvar";
+  return undefined;
+}
+
+/** FNV-1a 32-bit hash: cheap content fingerprint for skip-if-unchanged. */
+function fnv1a(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h;
+}
+
+/** Argument bounds of a parameter list. A call fills parameters from the
+ *  left, so every parameter up to the last one without a default is
+ *  required, even when an earlier one has a default. */
+function argBounds(hasDefault: readonly boolean[]): {
+  minArgs: number;
+  maxArgs: number;
+} {
+  let last = -1;
+  hasDefault.forEach((d, i) => {
+    if (!d) last = i;
+  });
+  return { minArgs: last + 1, maxArgs: hasDefault.length };
+}
+
+/** Splits a label macro's parameter list at top-level commas. */
+function splitMacroParams(s: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let inStr = false;
+  let cur = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (c === "^") {
+        cur += c + (s[i + 1] ?? "");
+        i++;
+        continue;
+      }
+      if (c === '"') inStr = false;
+    } else if (c === '"') inStr = true;
+    else if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if (c === "," && depth === 0) {
+      out.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += c;
+  }
+  if (cur.trim() || out.length) out.push(cur.trim());
+  return out.filter(Boolean);
+}
+
+/** Location spanning a declared name. */
+function nameLocation(
+  doc: IndexableDocument,
+  start: number,
+  name: string,
+): vscode.Location {
+  return new vscode.Location(
+    doc.uri,
+    new vscode.Range(
+      doc.positionAt(start),
+      doc.positionAt(start + name.length),
+    ),
+  );
+}
+
+/** Name key (nameKey) → per-source-file definitions. Several files may define
+ *  the same name (PRIVATE functions, or unrelated projects in one
+ *  workspace); keeping all of them lets a purge fall back to another one. */
+type DefsByKey<T> = Map<string, Map<string, T>>;
+
+function addDef<T>(defs: DefsByKey<T>, key: string, file: string, v: T) {
+  let m = defs.get(key);
+  if (!m) defs.set(key, (m = new Map()));
+  if (!m.has(file)) m.set(file, v);
+}
+
+function removeDef<T>(defs: DefsByKey<T>, key: string, file: string) {
+  const m = defs.get(key);
+  if (m?.delete(file) && m.size === 0) defs.delete(key);
+}
+
+/**
+ * Indexes Cicode files, labels.DBF and locvar.DBF tables: function
+ * definitions, variable declarations and labels, with their locations.
+ * Every map is keyed by nameKey: names ignore the case of ASCII letters
+ * only, as the compiler does.
+ */
 export class Indexer {
-  private readonly functionCache = new Map<string, FunctionInfo>();
+  private readonly builtinFunctions = new Map<string, FunctionInfo>();
+  private readonly _ciDefs: DefsByKey<FunctionInfo> = new Map();
+  private readonly _macroDefs: DefsByKey<FunctionInfo> = new Map();
+  private readonly _constDefs: DefsByKey<LabelRecord> = new Map();
+  // Resolved views over the definition maps: one entry per name.
+  private readonly _ciView = new Map<string, FunctionInfo>();
+  private readonly _macroView = new Map<string, FunctionInfo>();
+  readonly labelCache = new Map<string, LabelRecord>(); // constant labels
+  private _mergedFunctions: Map<string, FunctionInfo> | null = null;
+
   readonly variableCache = new Map<string, VariableEntry[]>();
-  readonly labelCache = new Map<string, LabelRecord>(); // label name (lower) → record
   private readonly functionRangesByFile = new Map<string, FunctionRange[]>();
   private readonly _ignoreSpansByFile = new Map<string, FileIgnoreSpans>();
 
@@ -66,40 +211,95 @@ export class Indexer {
   private readonly _variableKeysByFile = new Map<string, Set<string>>();
   private readonly _labelKeysByFile = new Map<string, Set<string>>();
 
+  // Content fingerprint of the last indexed text per file. Opening a document
+  // (e.g. diagnostics iterating the workspace) fires onDidOpenTextDocument;
+  // without this guard every such open re-indexes unchanged content and fires
+  // onIndexed, cascading into another diagnostics run per file.
+  private readonly _indexedTextHash = new Map<string, string>();
+
+  // labels.DBF tables read from outside the workspace (the Include project).
+  private _externalLabelFiles: string[] = [];
+  private _externalWatchers: vscode.Disposable[] = [];
+
   private readonly _onIndexed = new vscode.EventEmitter<string | undefined>();
-  /** Fires after indexing completes. Carries the file path for single-file reindex, undefined for full rebuild. */
+  /** Fires after indexing completes. Carries the source file path for
+   *  single-file reindex (a .ci file, or a labels.DBF/locvar.DBF path),
+   *  undefined for full rebuild. */
   readonly onIndexed = this._onIndexed.event;
 
   private _bulkIndexing = false;
+  // Monotonic version counter so a superseded buildAll can bail out instead
+  // of racing a newer build (duplicating locvar entries, corrupting flags).
+  private _buildVersion = 0;
 
-  private readonly _debouncedIndex: (doc: vscode.TextDocument) => void;
-  private readonly _debouncedReindexLabels: (filePath: string) => void;
-  private readonly _debouncedReindexLocvar: (filePath: string) => void;
+  private readonly _debouncedIndex: PerKeyDebounced<
+    (doc: vscode.TextDocument) => void
+  >;
+  private readonly _debouncedReindexLabels: PerKeyDebounced<
+    (filePath: string) => void
+  >;
+  private readonly _debouncedReindexLocvar: PerKeyDebounced<
+    (filePath: string) => void
+  >;
+  private readonly _debouncedSyncFromDisk: PerKeyDebounced<
+    (filePath: string) => void
+  >;
 
   constructor(
     context: vscode.ExtensionContext,
     private readonly cfg: () => vscode.WorkspaceConfiguration,
   ) {
-    this._debouncedIndex = debounce((doc) => this._indexFile(doc), 500);
-    this._debouncedReindexLabels = debounce(
+    this._debouncedIndex = debouncePerKey(
+      (doc: vscode.TextDocument) => {
+        // A document closed before its timer fired may belong to a path that
+        // was deleted or renamed since; indexing it would resurrect the dead
+        // path. Closed files are re-read from disk by the .ci watcher instead.
+        if (doc.isClosed) return;
+        void this._indexFile(doc).catch((e) =>
+          error("index fail", doc.uri.fsPath, e),
+        );
+      },
+      500,
+      (doc) => doc.uri.fsPath,
+    );
+    this._debouncedSyncFromDisk = debouncePerKey(
+      (p: string) => {
+        void this._syncFromDisk(p).catch((e) => error("index fail", p, e));
+      },
+      500,
+      (p) => p,
+    );
+    this._debouncedReindexLabels = debouncePerKey(
       (p: string) => this._reindexLabelsFile(p),
       500,
+      (p) => p,
     );
-    this._debouncedReindexLocvar = debounce(
+    this._debouncedReindexLocvar = debouncePerKey(
       (p: string) => this._reindexLocvarFile(p),
       500,
+      (p) => p,
     );
 
     const labelsWatcher =
-      vscode.workspace.createFileSystemWatcher("**/labels.DBF");
+      vscode.workspace.createFileSystemWatcher(LABELS_DBF_GLOB);
     const locvarWatcher =
-      vscode.workspace.createFileSystemWatcher("**/locvar.DBF");
+      vscode.workspace.createFileSystemWatcher(LOCVAR_DBF_GLOB);
+    // .ci files edited outside VS Code (AVEVA editors, git, Explorer) never
+    // raise TextDocument events for unopened files.
+    const ciWatcher = vscode.workspace.createFileSystemWatcher(CI_FILE_GLOB);
     context.subscriptions.push(
+      ciWatcher,
+      ciWatcher.onDidChange((uri) => this._debouncedSyncFromDisk(uri.fsPath)),
+      ciWatcher.onDidCreate((uri) => this._debouncedSyncFromDisk(uri.fsPath)),
+      ciWatcher.onDidDelete((uri) => this._debouncedSyncFromDisk(uri.fsPath)),
       labelsWatcher,
       labelsWatcher.onDidChange((uri) =>
         this._debouncedReindexLabels(uri.fsPath),
       ),
       labelsWatcher.onDidCreate((uri) =>
+        this._debouncedReindexLabels(uri.fsPath),
+      ),
+      labelsWatcher.onDidDelete((uri) =>
         this._debouncedReindexLabels(uri.fsPath),
       ),
       locvarWatcher,
@@ -109,32 +309,49 @@ export class Indexer {
       locvarWatcher.onDidCreate((uri) =>
         this._debouncedReindexLocvar(uri.fsPath),
       ),
+      locvarWatcher.onDidDelete((uri) =>
+        this._debouncedReindexLocvar(uri.fsPath),
+      ),
       vscode.workspace.onDidSaveTextDocument((d) => this._maybeIndex(d)),
       vscode.workspace.onDidOpenTextDocument((d) => this._maybeIndex(d)),
       vscode.workspace.onDidChangeTextDocument((e) =>
         this._maybeIndex(e.document),
       ),
       vscode.workspace.onDidDeleteFiles((e) =>
-        e.files.forEach((f) => this._purgeFile(f.fsPath)),
+        e.files.forEach((f) => this._purgePath(f.fsPath)),
       ),
       vscode.workspace.onDidRenameFiles((e) =>
         e.files.forEach(({ oldUri, newUri }) =>
-          this._moveFile(oldUri.fsPath, newUri.fsPath),
+          this._movePath(oldUri.fsPath, newUri.fsPath),
         ),
       ),
+      // extension.ts rebuilds the index when cicode.indexing.includeProjectPath
+      // or cicode.avevaPath (both steer the Include lookup) changes.
+      { dispose: () => this._disposeExternalWatchers() },
     );
   }
 
-  /** Build index for all .ci files in the workspace */
+  /** Build the index for all workspace sources. */
   async buildAll(): Promise<void> {
-    this.functionCache.clear();
+    const version = ++this._buildVersion;
+    this.builtinFunctions.clear();
+    this._ciDefs.clear();
+    this._macroDefs.clear();
+    this._constDefs.clear();
+    this._ciView.clear();
+    this._macroView.clear();
+    this.labelCache.clear();
+    this._mergedFunctions = null;
     this.variableCache.clear();
     this.functionRangesByFile.clear();
-    this.labelCache.clear();
+    this._functionKeysByFile.clear();
+    this._variableKeysByFile.clear();
+    this._labelKeysByFile.clear();
+    this._ignoreSpansByFile.clear();
+    this._indexedTextHash.clear();
 
-    // Load builtin functions first
     for (const [k, v] of getBuiltins()) {
-      this.functionCache.set(k, {
+      this.builtinFunctions.set(k, {
         ...v,
         location: null,
         file: null,
@@ -142,27 +359,31 @@ export class Indexer {
       });
     }
 
-    // Find and index all .ci files
-    const files = await findWorkspaceFiles("**/*.ci", this.cfg);
+    // Labels first: the compiler expands them before anything else.
+    const labelFiles = await findWorkspaceFiles(LABELS_DBF_GLOB, this.cfg);
+    if (version !== this._buildVersion) return; // superseded by a newer buildAll
+    const external = this._findExternalLabels(labelFiles);
+    for (const f of [...labelFiles.map((u) => u.fsPath), ...external]) {
+      this._indexLabels(f);
+    }
+    this._watchExternalLabels(external);
+
+    const files = await findWorkspaceFiles(CI_FILE_GLOB, this.cfg);
+    if (version !== this._buildVersion) return;
     this._bulkIndexing = true;
     for (const file of files) {
       try {
-        const doc = await vscode.workspace.openTextDocument(file);
-        await this._indexFile(doc);
+        await this._indexPath(file);
       } catch (e) {
         error("index fail", file.fsPath, e);
       }
+      // Superseded: the newer build owns the caches and the bulk flag.
+      if (version !== this._buildVersion) return;
     }
     this._bulkIndexing = false;
 
-    // Index labels from all labels.DBF files in the workspace
-    const labelFiles = await findWorkspaceFiles("**/labels.DBF", this.cfg);
-    for (const file of labelFiles) {
-      this._indexLabels(file.fsPath);
-    }
-
-    // Index variables from all locvar.DBF files in the workspace
-    const locvarFiles = await findWorkspaceFiles("**/locvar.DBF", this.cfg);
+    const locvarFiles = await findWorkspaceFiles(LOCVAR_DBF_GLOB, this.cfg);
+    if (version !== this._buildVersion) return;
     for (const file of locvarFiles) {
       this._indexLocvar(file.fsPath);
     }
@@ -170,54 +391,109 @@ export class Indexer {
     this._onIndexed.fire(undefined);
   }
 
-  private _indexLabels(filePath: string): void {
-    const records = parseLabelsDbf(filePath);
-    for (const rec of records) {
-      const parenIdx = rec.name.indexOf("(");
-      if (parenIdx !== -1) {
-        // Function-like macro: index into functionCache
-        const funcName = rec.name.slice(0, parenIdx).trim();
-        const closeIdx = rec.name.lastIndexOf(")");
-        if (closeIdx === -1) continue; // malformed entry — skip
-        const paramStr = rec.name.slice(parenIdx + 1, closeIdx);
-        const params = paramStr
-          ? paramStr
-              .split(",")
-              .map((p) => p.trim())
-              .filter(Boolean)
-          : [];
-        const key = funcName.toLowerCase();
-        if (!this.functionCache.has(key)) {
-          this.functionCache.set(key, {
-            name: funcName,
-            returnType: "",
-            params,
-            file: filePath,
-            location: null,
-            bodyRange: null,
-            expr: rec.expr || undefined,
-            doc: rec.comment || undefined,
-          });
-          this._addToReverseIndex(this._functionKeysByFile, filePath, key);
-        }
-      } else {
-        // Constant: index into labelCache
-        const key = rec.name.trim().toLowerCase();
-        if (key && !this.labelCache.has(key)) {
-          this.labelCache.set(key, rec);
-          this._addToReverseIndex(this._labelKeysByFile, filePath, key);
-        }
+  /**
+   * The compiler always compiles the Include project in, so its labels are
+   * active in every project. When the workspace does not contain it, read
+   * its labels.DBF from the Plant SCADA User folder.
+   */
+  private _findExternalLabels(workspaceLabels: vscode.Uri[]): string[] {
+    const inWorkspace = workspaceLabels.some(
+      (u) => path.basename(path.dirname(u.fsPath)).toLowerCase() === "include",
+    );
+    if (inWorkspace) return [];
+    const c = this.cfg();
+    const explicit =
+      c.get<string>("cicode.indexing.includeProjectPath", "")?.trim() ||
+      undefined;
+    const file = locateIncludeLabels({
+      explicit,
+      near: (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
+      avevaPath: c.get<string>("cicode.avevaPath", "")?.trim() || undefined,
+    });
+    if (!file) {
+      if (explicit)
+        warn("no labels.DBF at cicode.indexing.includeProjectPath", explicit);
+      return [];
+    }
+    const key = path.resolve(file).toLowerCase();
+    return workspaceLabels.some(
+      (u) => path.resolve(u.fsPath).toLowerCase() === key,
+    )
+      ? []
+      : [file];
+  }
+
+  private _watchExternalLabels(files: string[]): void {
+    this._disposeExternalWatchers();
+    this._externalLabelFiles = files;
+    for (const f of files) {
+      try {
+        const w = vscode.workspace.createFileSystemWatcher(
+          new vscode.RelativePattern(
+            vscode.Uri.file(path.dirname(f)),
+            path.basename(LABELS_DBF_GLOB),
+          ),
+        );
+        const reindex = () => this._debouncedReindexLabels(f);
+        this._externalWatchers.push(
+          w,
+          w.onDidChange(reindex),
+          w.onDidCreate(reindex),
+          w.onDidDelete(reindex),
+        );
+      } catch (e) {
+        error("cannot watch", f, e);
       }
     }
   }
 
+  private _disposeExternalWatchers(): void {
+    for (const d of this._externalWatchers) d.dispose();
+    this._externalWatchers = [];
+  }
+
+  private _indexLabels(filePath: string): void {
+    this._purgeFile(filePath, false);
+    const records = parseLabelsDbf(filePath);
+    for (const rec of records) {
+      const parenIdx = rec.name.indexOf("(");
+      if (parenIdx === -1) {
+        const key = nameKey(rec.name.trim());
+        if (!key) continue;
+        addDef(this._constDefs, key, filePath, rec);
+        this._addToReverseIndex(this._labelKeysByFile, filePath, key);
+        this._refreshLabelView(key);
+        continue;
+      }
+      // Function-like macro: NAME(a, b=default)
+      const closeIdx = rec.name.lastIndexOf(")");
+      if (closeIdx < parenIdx) continue; // malformed entry
+      const funcName = rec.name.slice(0, parenIdx).trim();
+      if (!funcName) continue;
+      const params = splitMacroParams(rec.name.slice(parenIdx + 1, closeIdx));
+      const key = nameKey(funcName);
+      addDef(this._macroDefs, key, filePath, {
+        name: funcName,
+        returnType: "",
+        params,
+        file: filePath,
+        location: null,
+        bodyRange: null,
+        expr: rec.expr || undefined,
+        doc: rec.comment || undefined,
+        origin: "label",
+        ...argBounds(params.map((p) => p.includes("="))),
+      });
+      this._addToReverseIndex(this._functionKeysByFile, filePath, key);
+      this._refreshMacroView(key);
+    }
+  }
+
   private _indexLocvar(filePath: string): void {
+    this._purgeFile(filePath, false);
     const records = parseLocvarDbf(filePath);
     for (const rec of records) {
-      const key = rec.name.toLowerCase();
-      this._addToReverseIndex(this._variableKeysByFile, filePath, key);
-      if (!this.variableCache.has(key)) this.variableCache.set(key, []);
-      this.variableCache.get(key)!.push({
+      this._addVar(rec.name, {
         name: rec.name,
         type: rec.type || "UNKNOWN",
         scopeType: "global",
@@ -232,58 +508,72 @@ export class Indexer {
   }
 
   private _reindexLocvarFile(filePath: string): void {
-    const keys = this._variableKeysByFile.get(filePath);
-    if (keys) {
-      for (const key of keys) {
-        const arr = this.variableCache.get(key);
-        if (arr) {
-          const filtered = arr.filter((e) => e.file !== filePath);
-          if (filtered.length) this.variableCache.set(key, filtered);
-          else this.variableCache.delete(key);
-        }
-      }
-      this._variableKeysByFile.delete(filePath);
-    }
     this._indexLocvar(filePath);
-    this._onIndexed.fire(undefined);
+    this._onIndexed.fire(filePath);
   }
 
   private _reindexLabelsFile(filePath: string): void {
-    // Purge function-like macros using reverse index — O(entries_in_file)
-    const funcKeys = this._functionKeysByFile.get(filePath);
-    if (funcKeys) {
-      for (const key of funcKeys) this.functionCache.delete(key);
-      this._functionKeysByFile.delete(filePath);
-    }
-
-    // Purge label constants using reverse index — O(entries_in_file)
-    const labelKeys = this._labelKeysByFile.get(filePath);
-    if (labelKeys) {
-      for (const key of labelKeys) this.labelCache.delete(key);
-      this._labelKeysByFile.delete(filePath);
-    }
-
-    // Re-index
     this._indexLabels(filePath);
-    this._onIndexed.fire(undefined);
+    this._onIndexed.fire(filePath);
   }
 
   private _maybeIndex(doc: vscode.TextDocument): void {
-    if (!doc || !doc.uri.fsPath.toLowerCase().endsWith(".ci")) return;
+    if (!doc || !isIndexableUri(doc.uri)) return;
+    if (sourceKind(doc.uri.fsPath) !== "ci") return;
     this._debouncedIndex(doc);
   }
 
+  /** Re-sync one .ci file after it changed on disk. Cheap when nothing
+   *  changed: open documents and unchanged bytes hit the content-hash guard. */
+  private async _syncFromDisk(fsPath: string): Promise<void> {
+    const uri = vscode.Uri.file(fsPath);
+    const known = this._indexedTextHash.has(fsPath);
+    try {
+      await vscode.workspace.fs.stat(uri);
+    } catch {
+      // Deleted (in-app deletes/renames were already purged by their events)
+      if (known) this._purgeFile(fsPath);
+      return;
+    }
+    if (!known && this._isExcluded(uri)) return;
+    await this._indexPath(uri);
+  }
+
+  /** Same test as findWorkspaceFiles' `cicode.indexing.excludePatterns`
+   *  filter, for a single file reported by the watcher. */
+  private _isExcluded(uri: vscode.Uri): boolean {
+    const patterns = this.cfg().get<string[]>(
+      "cicode.indexing.excludePatterns",
+      [],
+    );
+    if (!patterns.length) return false;
+    const rel = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
+    return patterns.some((p) => {
+      if (!p) return false;
+      try {
+        return new RegExp(p, "i").test(rel);
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  /** Purge all cache entries owned by a file. Definitions of the same names
+   *  in other files take over automatically. */
   private _purgeFile(file: string, fireEvent = true): void {
-    // Use reverse index for O(functions_in_file) instead of O(all_functions)
+    this._indexedTextHash.delete(file);
+
     const funcKeys = this._functionKeysByFile.get(file);
     if (funcKeys) {
       for (const key of funcKeys) {
-        this.functionCache.delete(key);
+        removeDef(this._ciDefs, key, file);
+        removeDef(this._macroDefs, key, file);
+        this._refreshCiView(key);
+        this._refreshMacroView(key);
       }
       this._functionKeysByFile.delete(file);
     }
 
-    // Use reverse index for O(variables_in_file) instead of O(all_variables)
     const varKeys = this._variableKeysByFile.get(file);
     if (varKeys) {
       for (const key of varKeys) {
@@ -297,46 +587,139 @@ export class Indexer {
       this._variableKeysByFile.delete(file);
     }
 
+    const labelKeys = this._labelKeysByFile.get(file);
+    if (labelKeys) {
+      for (const key of labelKeys) {
+        removeDef(this._constDefs, key, file);
+        this._refreshLabelView(key);
+      }
+      this._labelKeysByFile.delete(file);
+    }
+
     this.functionRangesByFile.delete(file);
     this._ignoreSpansByFile.delete(file);
-    if (fireEvent) this._onIndexed.fire(file);
+    if (fireEvent) {
+      // The file is gone: a pending reindex would resurrect it from a stale
+      // TextDocument.
+      this._debouncedIndex.cancel(file);
+      this._onIndexed.fire(file);
+    }
+  }
+
+  private _refreshCiView(key: string): void {
+    // A PUBLIC definition wins over PRIVATE ones, which only their own file
+    // can call.
+    let pick: FunctionInfo | undefined;
+    for (const info of this._ciDefs.get(key)?.values() ?? []) {
+      if (!info.isPrivate) {
+        pick = info;
+        break;
+      }
+      pick ??= info;
+    }
+    if (pick) this._ciView.set(key, pick);
+    else this._ciView.delete(key);
+    this._mergedFunctions = null;
+  }
+
+  private _refreshMacroView(key: string): void {
+    const defs = this._macroDefs.get(key);
+    const macro = defs?.values().next().value as FunctionInfo | undefined;
+    if (!macro) {
+      this._macroView.delete(key);
+    } else {
+      // A documented function that is really a label keeps its help text,
+      // but the label decides the arguments.
+      const b = this.builtinFunctions.get(key);
+      this._macroView.set(
+        key,
+        b
+          ? {
+              ...macro,
+              returnType: macro.returnType || b.returnType,
+              doc: b.doc || macro.doc,
+              returns: b.returns,
+              helpPath: b.helpPath,
+              helpId: b.helpId,
+            }
+          : macro,
+      );
+    }
+    this._mergedFunctions = null;
+  }
+
+  private _refreshLabelView(key: string): void {
+    const rec = this._constDefs.get(key)?.values().next().value as
+      | LabelRecord
+      | undefined;
+    if (rec) this.labelCache.set(key, rec);
+    else this.labelCache.delete(key);
   }
 
   private _moveFile(oldPath: string, newPath: string): void {
-    // Update function cache entries
-    for (const [key, v] of this.functionCache) {
-      if (v && v.file === oldPath) {
-        this.functionCache.set(key, { ...v, file: newPath });
+    // A pending reindex of the old path would resurrect it under a dead path.
+    this._debouncedIndex.cancel(oldPath);
+    const oldKind = sourceKind(oldPath);
+    const newKind = sourceKind(newPath);
+    if (oldKind === undefined && newKind === undefined) return; // not ours
+
+    // Locations and local scope ids embed the path, so re-read the source
+    // under its new name; a source renamed to another kind of name
+    // (Util.ci -> Util.ci.old) stops contributing altogether.
+    this._purgeFile(oldPath, false);
+    switch (newKind) {
+      case "ci":
+        this._indexedTextHash.delete(newPath);
+        void this._indexPath(vscode.Uri.file(newPath)).catch((e) => {
+          error("index fail", newPath, e);
+          this._onIndexed.fire(newPath);
+        });
+        return;
+      case "labels":
+        this._indexLabels(newPath);
+        break;
+      case "locvar":
+        this._indexLocvar(newPath);
+        break;
+    }
+    this._onIndexed.fire(newKind ? newPath : oldPath);
+  }
+
+  /** All indexed file paths located under a directory. */
+  private _indexedFilesUnder(dir: string): string[] {
+    const prefix = dir + path.sep;
+    const files = new Set<string>();
+    for (const keys of [
+      this._functionKeysByFile.keys(),
+      this._variableKeysByFile.keys(),
+      this._labelKeysByFile.keys(),
+      this.functionRangesByFile.keys(),
+      this._ignoreSpansByFile.keys(),
+    ]) {
+      for (const f of keys) if (f.startsWith(prefix)) files.add(f);
+    }
+    return [...files];
+  }
+
+  /** Purge a deleted path: a single file, or every indexed file under a folder
+   *  (VS Code fires one event with the folder URI for folder deletes). */
+  private _purgePath(fsPath: string): void {
+    const children = this._indexedFilesUnder(fsPath);
+    if (children.length) for (const f of children) this._purgeFile(f);
+    else this._purgeFile(fsPath);
+  }
+
+  /** Move a renamed path: a single file, or every indexed file under a folder
+   *  (VS Code fires one event with the folder URI for folder renames). */
+  private _movePath(oldPath: string, newPath: string): void {
+    const children = this._indexedFilesUnder(oldPath);
+    if (children.length) {
+      for (const f of children) {
+        this._moveFile(f, newPath + f.slice(oldPath.length));
       }
+    } else {
+      this._moveFile(oldPath, newPath);
     }
-    // Update variable cache entries
-    for (const [key, arr] of this.variableCache) {
-      const updated = arr.map((e) =>
-        e.file === oldPath ? { ...e, file: newPath } : e,
-      );
-      this.variableCache.set(key, updated);
-    }
-    // Update function ranges by file
-    if (this.functionRangesByFile.has(oldPath)) {
-      this.functionRangesByFile.set(
-        newPath,
-        this.functionRangesByFile.get(oldPath)!,
-      );
-      this.functionRangesByFile.delete(oldPath);
-    }
-    // Update ignore spans by file
-    if (this._ignoreSpansByFile.has(oldPath)) {
-      this._ignoreSpansByFile.set(
-        newPath,
-        this._ignoreSpansByFile.get(oldPath)!,
-      );
-      this._ignoreSpansByFile.delete(oldPath);
-    }
-    // Update reverse indexes
-    this._moveReverseIndex(this._functionKeysByFile, oldPath, newPath);
-    this._moveReverseIndex(this._variableKeysByFile, oldPath, newPath);
-    this._moveReverseIndex(this._labelKeysByFile, oldPath, newPath);
-    this._onIndexed.fire(newPath);
   }
 
   /** Generate unique scope ID for local variables */
@@ -357,480 +740,253 @@ export class Indexer {
     s.add(key);
   }
 
-  private _moveReverseIndex(
-    index: Map<string, Set<string>>,
-    oldPath: string,
-    newPath: string,
-  ): void {
-    const s = index.get(oldPath);
-    if (s) {
-      index.set(newPath, s);
-      index.delete(oldPath);
+  /** Index a file by path, reusing an already-open document when available
+   *  and otherwise reading it from disk. */
+  private async _indexPath(uri: vscode.Uri): Promise<void> {
+    const openDoc = findOpenDocument(uri);
+    if (openDoc) {
+      await this._indexFile(openDoc);
+      return;
     }
+    const text = await readSourceText(uri);
+    await this._indexFile(new FileDocument(uri, text));
   }
 
-  private async _indexFile(doc: vscode.TextDocument): Promise<void> {
+  private async _indexFile(doc: IndexableDocument): Promise<void> {
     const file = doc.uri.fsPath;
-    this._purgeFile(file, false);
-
     const text = doc.getText();
+
+    // No-op when the content is what we already indexed (see _indexedTextHash).
+    const hash = `${text.length}:${fnv1a(text)}`;
+    if (this._indexedTextHash.get(file) === hash) return;
+
+    this._purgeFile(file, false);
+    this._indexedTextHash.set(file, hash);
     const base = buildIgnoreSpans(text, { includeFunctionHeaders: false });
+    const lineIndex =
+      doc instanceof FileDocument ? doc.lineIndex : buildLineIndex(text);
+    const parsed = parseCicode(text);
 
-    const functions = this._extractFunctionsWithRanges(text, doc, base);
-
-    // Derive header spans from the already-extracted functions
+    const functions = parsed.functions.map((pf) =>
+      this._toFunctionRange(pf, doc, text, lineIndex, parsed.comments),
+    );
+    // Header spans run from the first header word (scope or type) to ')'.
     const headerSpans: Array<[number, number]> = functions.map((f) => [
-      f.headerIndex,
+      f.itemStart,
       f.startOffset,
     ]);
     this._ignoreSpansByFile.set(file, new FileIgnoreSpans(base, headerSpans));
     this.functionRangesByFile.set(file, functions);
 
-    for (const f of functions) {
-      const key = f.name.toLowerCase();
-      const params = splitParamsTopLevel(f.paramsRaw).filter(Boolean);
-
-      this.functionCache.set(key, {
+    parsed.functions.forEach((pf, idx) => {
+      const f = functions[idx];
+      const key = nameKey(f.name);
+      addDef(this._ciDefs, key, file, {
         name: f.name,
         returnType: f.returnType || "VOID",
-        params,
+        params: pf.params.map((p) => p.text),
         location: f.location,
         doc: f.docText || "",
         returns: f.returnsDoc,
         paramDocs: f.paramDocs,
         file,
         bodyRange: f.bodyRange,
+        origin: "cicode",
+        isPrivate: f.scope === "PRIVATE",
+        ...argBounds(pf.params.map((p) => p.hasDefault)),
       });
-
-      // Track in reverse index for efficient purge
       this._addToReverseIndex(this._functionKeysByFile, file, key);
+      this._refreshCiView(key);
 
-      // Register function parameters as local variables
-      for (const v of this._parseParamVariables(params)) {
-        this._addVar(v.name, {
-          name: v.name,
-          type: v.type,
+      const scopeId = this.localScopeId(file, f.name);
+      for (const p of pf.params) {
+        this._addVar(p.name, {
+          name: p.name,
+          type: p.type,
           scopeType: "local",
-          scopeId: this.localScopeId(file, f.name),
-          location: new vscode.Location(doc.uri, f.location.range.start),
+          scopeId,
+          location: nameLocation(doc, p.nameStart, p.name),
           file,
           range: f.bodyRange,
           isParam: true,
         });
       }
-    }
+    });
 
-    this._indexVariablesInText(doc, text, functions);
-    if (!this._bulkIndexing) this._onIndexed.fire(file);
-  }
-
-  private _addVar(name: string, entry: VariableEntry) {
-    const k = name.toLowerCase();
-    if (!this.variableCache.has(k)) this.variableCache.set(k, []);
-    this.variableCache.get(k)!.push(entry);
-
-    // Track in reverse index for efficient purge
-    this._addToReverseIndex(this._variableKeysByFile, entry.file, k);
-  }
-
-  /**
-   * Extract function definitions with their body ranges from source text.
-   * Handles multi-line function signatures and various return type patterns.
-   */
-  private _extractFunctionsWithRanges(
-    text: string,
-    doc: vscode.TextDocument,
-    ignoreCS: Array<[number, number]>,
-  ): FunctionRange[] {
-    const funcKeywordRe = /\bfunction\b/gi;
-    const headers: Array<{
-      returnType: string;
-      name: string;
-      paramsRaw: string;
-      headerIndex: number;
-      headerPos: vscode.Position;
-      location: vscode.Location;
-      docText?: string;
-      paramDocs?: Record<string, string>;
-      returnsDoc?: string;
-      headerEndPos: number;
-    }> = [];
-
-    let m: RegExpExecArray | null;
-    while ((m = funcKeywordRe.exec(text))) {
-      if (inSpan(m.index, ignoreCS)) continue;
-
-      const funcKeywordPos = m.index + m[0].length;
-
-      let name = "";
-      let paramsRaw = "";
-      let nameOffset = 0;
-      let headerEndPos = 0;
-
-      // Get text after FUNCTION keyword
-      const afterFunc = text.slice(funcKeywordPos);
-
-      // Skip any inline comment on the same line as FUNCTION keyword
-      // Comments in Cicode: // or ! or |
-      // We need to skip: optional whitespace, then optional comment to end of line
-      const skipCommentMatch = /^[ \t]*((?:\/\/|!|\|)[^\r\n]*)?\r?\n?/i.exec(
-        afterFunc,
-      );
-      const skipLen = skipCommentMatch ? skipCommentMatch[0].length : 0;
-      const afterComment = afterFunc.slice(skipLen);
-      const afterCommentPos = funcKeywordPos + skipLen;
-
-      // Try to match function name and params
-      const nameMatch = /^\s*(\w+)\s*\(([^)]*)\)/i.exec(afterComment);
-
-      if (nameMatch && !nameMatch[2].includes("\n")) {
-        // Simple case: name(params) all on one line (or what remains fits)
-        name = nameMatch[1];
-        paramsRaw = nameMatch[2] || "";
-        nameOffset =
-          afterCommentPos + nameMatch.index + nameMatch[0].indexOf(name);
-        headerEndPos = afterCommentPos + nameMatch.index + nameMatch[0].length;
-      } else {
-        // Handle multi-line function signatures
-        const nameOnlyMatch = /^\s*(\w+)\s*\(/i.exec(afterComment);
-        if (!nameOnlyMatch) continue;
-
-        name = nameOnlyMatch[1];
-        nameOffset = afterCommentPos + afterComment.indexOf(name);
-
-        // Find matching closing paren across multiple lines
-        const openParenPos = afterCommentPos + nameOnlyMatch[0].length - 1;
-        let depth = 1;
-        let closeParenPos = -1;
-
-        for (
-          let i = openParenPos + 1;
-          i < text.length && i < openParenPos + 5000;
-          i++
-        ) {
-          if (inSpan(i, ignoreCS)) continue;
-          const ch = text[i];
-          if (ch === "(") depth++;
-          else if (ch === ")") {
-            depth--;
-            if (depth === 0) {
-              closeParenPos = i;
-              break;
-            }
-          }
-        }
-
-        if (closeParenPos === -1) continue;
-
-        paramsRaw = text.slice(openParenPos + 1, closeParenPos);
-        headerEndPos = closeParenPos + 1;
-      }
-
-      // Extract return type from lines before FUNCTION keyword
-      const beforeFunc = text.slice(0, m.index);
-      const beforeLines = beforeFunc.split(/\r?\n/);
-      let returnType = "VOID";
-
-      // Check for type on same line: "INT FUNCTION foo()"
-      const lastLine = beforeLines[beforeLines.length - 1] || "";
-      const sameLineMatch = RETURN_TYPE_SAME_LINE_RE.exec(lastLine);
-
-      if (sameLineMatch) {
-        returnType = sameLineMatch[1].toUpperCase();
-      } else {
-        // Scan upward (max 20 lines) for standalone type declaration
-        for (
-          let i = beforeLines.length - 1;
-          i >= 0 && i >= beforeLines.length - 20;
-          i--
-        ) {
-          const raw = beforeLines[i];
-          const line = stripLineComment(raw).trim();
-
-          if (!line) continue;
-
-          // Stop at module declarations or code
-          if (/^\s*MODULE\b/i.test(line)) break;
-          if (line.endsWith(";")) break;
-          if (/\b(END|IF|FOR|WHILE|SELECT)\b/i.test(line)) break;
-
-          const mType = RETURN_TYPE_PREV_LINE_RE.exec(line);
-          if (mType) {
-            returnType = mType[1].toUpperCase();
-            break;
-          }
-        }
-      }
-
-      const headerStart = m.index;
-      const startPos = doc.positionAt(nameOffset);
-      const headerPos = doc.positionAt(headerStart);
-      const loc = new vscode.Location(doc.uri, startPos);
-
-      // Extract XML documentation comments (/// style)
-      let docText: string | undefined;
-      let paramDocs: Record<string, string> | undefined;
-      let returnsDoc: string | undefined;
-
-      let docLines = extractSlashDoubleStarDoc(text, headerStart);
-      if (!docLines.length) {
-        docLines = extractLeadingTripleSlashDoc(text, headerStart);
-      }
-      if (docLines.length) {
-        const parsed = parseDocLines(docLines);
-        docText = parsed.summary || undefined;
-        returnsDoc = parsed.returns || undefined;
-        if (Object.keys(parsed.paramDocs).length) paramDocs = parsed.paramDocs;
-      }
-
-      headers.push({
-        name,
-        returnType,
-        paramsRaw,
-        headerIndex: headerStart,
-        headerPos,
-        location: loc,
-        docText,
-        paramDocs,
-        returnsDoc,
-        headerEndPos,
+    for (const d of parsed.declarations) {
+      const type = d.type + d.dims.map((x) => `[${x}]`).join("");
+      const f = d.fn >= 0 ? functions[d.fn] : undefined;
+      this._addVar(d.name, {
+        name: d.name,
+        type,
+        scopeType: f ? "local" : d.scope === "GLOBAL" ? "global" : "module",
+        scopeId: f
+          ? this.localScopeId(file, f.name)
+          : d.scope === "GLOBAL"
+            ? "global"
+            : file,
+        location: nameLocation(doc, d.nameStart, d.name),
+        file,
+        range: f ? f.bodyRange : null,
+        isParam: false,
       });
     }
 
-    // Match function bodies by tracking nested blocks
-    const out: FunctionRange[] = [];
-
-    for (let hi = 0; hi < headers.length; hi++) {
-      const h = headers[hi];
-      const bodyStart = h.headerEndPos;
-
-      // Don't search past the next function's header
-      const maxSearchEnd =
-        hi + 1 < headers.length ? headers[hi + 1].headerIndex : text.length;
-
-      // Track nesting depth to find matching END
-      // Note: 'function' is excluded since Cicode doesn't support nested functions
-      // END optionally consumes a trailing block keyword (END SELECT, END IF, ...)
-      // so the closing keyword isn't re-counted as opening a new block.
-      let depth = 1;
-      const tokenRe =
-        /\bend\b(?:[ \t]+(?:if|for|while|repeat|try|select)\b)?|\b(?:if|for|while|repeat|try|select)\b/gi;
-      tokenRe.lastIndex = bodyStart;
-
-      let endPos = maxSearchEnd;
-      let t: RegExpExecArray | null;
-
-      while ((t = tokenRe.exec(text))) {
-        if (t.index >= maxSearchEnd) break;
-        if (inSpan(t.index, ignoreCS)) continue;
-
-        const isEnd = /^end\b/i.test(t[0]);
-        if (isEnd) {
-          depth--;
-          if (depth === 0) {
-            endPos = t.index + t[0].length;
-            break;
-          }
-        } else {
-          depth++;
-        }
-      }
-
-      out.push({
-        ...h,
-        startOffset: h.headerEndPos,
-        endOffset: endPos,
-        bodyRange: new vscode.Range(
-          doc.positionAt(bodyStart),
-          doc.positionAt(endPos),
-        ),
-      } as FunctionRange);
-    }
-
-    return out;
+    if (!this._bulkIndexing) this._onIndexed.fire(file);
   }
 
-  /** Parse function parameters into type/name pairs */
-  private _parseParamVariables(
-    params: string[],
-  ): Array<{ type: string; name: string }> {
-    const out: Array<{ type: string; name: string }> = [];
-    for (const raw of params) {
-      // Match: TYPE NAME or TYPE NAME=DEFAULT (with optional spaces around =)
-      const m = raw.match(/^\s*(\w+)\s+(\w+)(?:\s*=.*)?$/);
-      if (m) {
-        out.push({ type: m[1].toUpperCase(), name: m[2] });
-      } else {
-        // Fallback: try to extract just the variable name
-        // Strip any default value assignment first
-        const withoutDefault = raw.replace(/\s*=.*$/, "").trim();
-        const parts = withoutDefault.split(/\s+/);
-        if (parts.length >= 2) {
-          // TYPE NAME format
-          out.push({ type: parts[0].toUpperCase(), name: parts[1] });
-        } else if (parts.length === 1 && parts[0]) {
-          // Just a name without type
-          out.push({ type: "UNKNOWN", name: parts[0] });
-        }
-      }
-    }
-    return out;
-  }
-
-  /** Index variable declarations in both function bodies and module scope */
-  private _indexVariablesInText(
-    doc: vscode.TextDocument,
+  private _toFunctionRange(
+    pf: ParsedFunction,
+    doc: IndexableDocument,
     text: string,
-    functions: FunctionRange[],
-  ): void {
-    const file = doc.uri.fsPath;
-    const intervals = functions.map((f) => ({
-      start: doc.offsetAt(f.bodyRange.start),
-      end: doc.offsetAt(f.bodyRange.end),
-      func: f,
-    }));
-
-    const scanDeclsInSlice = (
-      sliceText: string,
-      baseOffset: number,
-      scopeKind: "local" | "module",
-      funcCtx: FunctionRange | null,
-    ) => {
-      const ignore = buildIgnoreSpans(sliceText);
-      // Allow multi-line declarations: only continue when a line ends with a comma
-      const declRe =
-        /^\s*(?:(GLOBAL|MODULE)[ \t]+)?(\w+)[ \t]+((?:[^\r\n;]*,[ \t]*\r?\n[ \t]+)*[^\r\n;]+)[ \t]*;?/gim;
-      let m: RegExpExecArray | null;
-
-      while ((m = declRe.exec(sliceText))) {
-        const kw = (m[1] || "").toUpperCase();
-        const typeRaw = m[2];
-        if (!TYPE_RE.test(typeRaw)) continue;
-
-        const anchor = m.index;
-        if (inSpan(anchor, ignore)) continue;
-
-        const type = typeRaw.toUpperCase();
-        const namesPart = m[3];
-        const decls = splitDeclNames(namesPart);
-        const namesRelStart = m.index + m[0].indexOf(namesPart);
-
-        for (const { name, arraySize } of decls) {
-          const nameRel = namesRelStart + Math.max(0, namesPart.indexOf(name));
-          const abs = baseOffset + nameRel;
-          const pos = doc.positionAt(abs);
-          const loc = new vscode.Location(doc.uri, pos);
-          const displayType = arraySize ? `${type}[${arraySize}]` : type;
-
-          const isGlobalKw = kw === "GLOBAL";
-
-          if (scopeKind === "local" && funcCtx) {
-            // Inside a function body
-            if (isGlobalKw) {
-              this._addVar(name, {
-                name,
-                type: displayType,
-                scopeType: "global",
-                scopeId: "global",
-                location: loc,
-                file,
-                range: null,
-                isParam: false,
-              });
-            } else {
-              this._addVar(name, {
-                name,
-                type: displayType,
-                scopeType: "local",
-                scopeId: this.localScopeId(file, funcCtx.name),
-                location: loc,
-                file,
-                range: funcCtx.bodyRange,
-                isParam: false,
-              });
-            }
-          } else if (scopeKind === "local" && !funcCtx) {
-            // Defensive: treat as module scope
-            this._addVar(name, {
-              name,
-              type: displayType,
-              scopeType: "module",
-              scopeId: file,
-              location: loc,
-              file,
-              range: null,
-              isParam: false,
-            });
-          } else {
-            // Module-level declaration
-            if (isGlobalKw) {
-              this._addVar(name, {
-                name,
-                type: displayType,
-                scopeType: "global",
-                scopeId: "global",
-                location: loc,
-                file,
-                range: null,
-                isParam: false,
-              });
-            } else {
-              this._addVar(name, {
-                name,
-                type: displayType,
-                scopeType: "module",
-                scopeId: file,
-                location: loc,
-                file,
-                range: null,
-                isParam: false,
-              });
-            }
-          }
-        }
+    lineIndex: LineIndex,
+    comments: Array<[number, number]>,
+  ): FunctionRange {
+    // Doc comments sit above the first header line (scope/type may be on
+    // lines of their own), or directly above FUNCTION.
+    let docLines = extractSlashDoubleStarDoc(lineIndex, pf.itemStart);
+    if (!docLines.length) {
+      docLines = extractLeadingTripleSlashDoc(lineIndex, pf.itemStart);
+    }
+    if (
+      !docLines.length &&
+      lineAtOffset(lineIndex, pf.itemStart) !==
+        lineAtOffset(lineIndex, pf.keywordStart)
+    ) {
+      docLines = extractSlashDoubleStarDoc(lineIndex, pf.keywordStart);
+      if (!docLines.length) {
+        docLines = extractLeadingTripleSlashDoc(lineIndex, pf.keywordStart);
       }
+    }
+    // Separator rows (////////, //-----) are not documentation.
+    docLines = docLines.filter((l) => !/^\s*([/\-=*_#~+])\1{2,}\s*$/.test(l));
+    const parsedDoc = docLines.some((l) => l.trim())
+      ? parseDocLines(docLines)
+      : undefined;
+
+    // Comments inside the list are blanked so consumers splitting it on
+    // commas see only parameter text.
+    const paramsRaw = blankComments(
+      text,
+      pf.paramsStart,
+      pf.paramsEnd,
+      comments,
+    );
+
+    const nameStart = doc.positionAt(pf.nameStart);
+    return {
+      name: pf.name,
+      returnType: pf.returnType ?? "VOID",
+      paramsRaw,
+      headerIndex: pf.keywordStart,
+      headerPos: doc.positionAt(pf.keywordStart),
+      itemStart: pf.itemStart,
+      nameOffset: pf.nameStart,
+      hasParens: pf.hasParens,
+      scope: pf.scope,
+      closed: pf.closed,
+      location: new vscode.Location(
+        doc.uri,
+        new vscode.Range(nameStart, doc.positionAt(pf.nameEnd)),
+      ),
+      startOffset: pf.headerEnd,
+      endOffset: pf.bodyEnd,
+      bodyRange: new vscode.Range(
+        doc.positionAt(pf.headerEnd),
+        doc.positionAt(pf.bodyEnd),
+      ),
+      docText: parsedDoc?.summary || undefined,
+      paramDocs:
+        parsedDoc && Object.keys(parsedDoc.paramDocs).length
+          ? parsedDoc.paramDocs
+          : undefined,
+      returnsDoc: parsedDoc?.returns || undefined,
     };
+  }
 
-    // Scan inside each function body
-    for (const f of functions) {
-      const base = doc.offsetAt(f.bodyRange.start);
-      const slice = text.slice(base, doc.offsetAt(f.bodyRange.end));
-      scanDeclsInSlice(slice, base, "local", f);
-    }
+  private _addVar(name: string, entry: VariableEntry) {
+    const k = nameKey(name);
+    let arr = this.variableCache.get(k);
+    if (!arr) this.variableCache.set(k, (arr = []));
+    arr.push(entry);
 
-    // Scan module-level regions (outside functions)
-    const nonFuncRegions: Array<[number, number]> = [];
-    let cursor = 0;
-    for (const it of intervals.sort((a, b) => a.start - b.start)) {
-      if (cursor < it.start) nonFuncRegions.push([cursor, it.start]);
-      cursor = Math.max(cursor, it.end);
-    }
-    if (cursor < text.length) nonFuncRegions.push([cursor, text.length]);
-
-    for (const [start, end] of nonFuncRegions) {
-      const slice = text.slice(start, end);
-      scanDeclsInSlice(slice, start, "module", null);
-    }
+    // Track in reverse index for efficient purge
+    this._addToReverseIndex(this._variableKeysByFile, entry.file, k);
   }
 
   // ===========================================================================
   // Public API
   // ===========================================================================
 
-  getFunction(name: string) {
-    return this.functionCache.get(name.toLowerCase());
+  /** Function-like label of a name: from a labels.DBF, else the Include
+   *  project's own (shipped with the built-ins; Include is always compiled
+   *  in). */
+  private _labelMacro(key: string): FunctionInfo | undefined {
+    const b = this.builtinFunctions.get(key);
+    return this._macroView.get(key) ?? (b?.origin === "label" ? b : undefined);
+  }
+
+  /** Resolve a function name the way the compiler does, without the calling
+   *  file: a function-like label (labels are expanded before names are
+   *  looked up), a PUBLIC .ci function, a built-in, then a PRIVATE .ci
+   *  function. A constant label or a variable in scope also hides a
+   *  function; callers check getLabel and resolveVariableInScope first. */
+  getFunction(name: string): FunctionInfo | undefined {
+    const key = nameKey(name);
+    const ci = this._ciView.get(key);
+    return (
+      this._labelMacro(key) ??
+      (ci && !ci.isPrivate ? ci : undefined) ??
+      this.builtinFunctions.get(key) ??
+      ci
+    );
+  }
+
+  /** The function a call in `file` reaches: a function-like label, the
+   *  file's own function (a PRIVATE one included), a PUBLIC one, then a
+   *  built-in. PRIVATE functions of other files are invisible (E2031), also
+   *  where they share a built-in's name. */
+  getFunctionFor(name: string, file: string): FunctionInfo | undefined {
+    const key = nameKey(name);
+    const ci = this._ciView.get(key);
+    return (
+      this._labelMacro(key) ??
+      this._ciDefs.get(key)?.get(file) ??
+      (ci && !ci.isPrivate ? ci : undefined) ??
+      this.builtinFunctions.get(key)
+    );
+  }
+
+  /** Every .ci definition of a name, one per defining file. */
+  getFunctionDefinitions(name: string): FunctionInfo[] {
+    return [...(this._ciDefs.get(nameKey(name))?.values() ?? [])];
+  }
+
+  getBuiltinFunction(name: string): FunctionInfo | undefined {
+    return this.builtinFunctions.get(nameKey(name));
   }
 
   hasFunction(name: string) {
-    return this.functionCache.has(name.toLowerCase());
+    return this.getFunction(name) !== undefined;
   }
 
+  /** Every function name (keyed by nameKey), resolved like getFunction. */
   getAllFunctions(): ReadonlyMap<string, FunctionInfo> {
-    return this.functionCache;
+    if (!this._mergedFunctions) {
+      const merged = new Map(this.builtinFunctions);
+      for (const [k, v] of this._ciView) {
+        const b = merged.get(k);
+        if (b?.origin === "label" || (v.isPrivate && b)) continue;
+        merged.set(k, v);
+      }
+      for (const [k, v] of this._macroView) merged.set(k, v);
+      this._mergedFunctions = merged;
+    }
+    return this._mergedFunctions;
   }
 
   getVariables(name: string) {
-    return this.variableCache.get(name.toLowerCase()) || [];
+    return this.variableCache.get(nameKey(name)) || [];
   }
 
   getAllVariableEntries(): ReadonlyArray<VariableEntry> {
@@ -885,47 +1041,94 @@ export class Indexer {
     return this._ignoreSpansByFile.get(file)?.get(opts);
   }
 
-  /** Resolve a variable name at a given position, respecting scope rules */
+  /**
+   * Resolve a variable name against the scope chain: local (by scope id),
+   * then module (same file), then global. With `at`, the compiler's
+   * declaration order applies: a local or module variable is only known
+   * after its declaration (an earlier use is an undefined tag, W1007), while
+   * parameters and GLOBAL variables are known everywhere.
+   */
+  resolveVariableInScope(
+    name: string,
+    file: string,
+    localScopeId: string | null,
+    at?: vscode.Position,
+  ): VariableEntry | null {
+    const candidates = this.variableCache.get(nameKey(name));
+    if (!candidates?.length) return null;
+
+    const declared = (v: VariableEntry) => {
+      if (!at || v.isParam || !v.location) return true;
+      const p = v.location.range.start;
+      return (
+        p.line < at.line || (p.line === at.line && p.character <= at.character)
+      );
+    };
+
+    if (localScopeId) {
+      const local = candidates.find(
+        (v) =>
+          v.scopeType === "local" && v.scopeId === localScopeId && declared(v),
+      );
+      if (local) return local;
+    }
+
+    const mod = candidates.find(
+      (v) => v.scopeType === "module" && v.scopeId === file && declared(v),
+    );
+    if (mod) return mod;
+
+    // A compile holds one GLOBAL of a name: prefer the one in this file's
+    // project folder, then the Include project's.
+    const globals = candidates.filter((v) => v.scopeType === "global");
+    const dir = path.dirname(file).toLowerCase();
+    const folder = (v: VariableEntry) => path.dirname(v.file).toLowerCase();
+    return (
+      globals.find((v) => folder(v) === dir) ??
+      globals.find((v) => path.basename(folder(v)) === "include") ??
+      globals[0] ??
+      null
+    );
+  }
+
+  /** Resolve a variable name at a given position, respecting scope rules
+   *  and declaration order. */
   resolveVariableAt(
     document: vscode.TextDocument,
     position: vscode.Position,
     name: string,
   ) {
     const file = document.uri.fsPath;
-    const lc = name.toLowerCase();
-    const candidates = this.variableCache.get(lc);
-    if (!candidates?.length) return null;
-
+    if (!this.variableCache.get(nameKey(name))?.length) return null;
     const encl = this.findEnclosingFunction(document, position);
-    if (encl) {
-      const sid = this.localScopeId(file, encl.name);
-      const local = candidates.find(
-        (v) => v.scopeType === "local" && v.scopeId === sid,
-      );
-      if (local) return local;
-    }
-
-    const mod = candidates.find(
-      (v) => v.scopeType === "module" && v.scopeId === file,
+    return this.resolveVariableInScope(
+      name,
+      file,
+      encl ? this.localScopeId(file, encl.name) : null,
+      position,
     );
-    if (mod) return mod;
-
-    const glob = candidates.find((v) => v.scopeType === "global");
-    if (glob) return glob;
-
-    return null;
   }
 
+  /** Is `name` a label (constant or function-like)? The compiler replaces
+   *  such a name everywhere outside strings, declarations included. */
   isKnownLabel(name: string): boolean {
-    return this.labelCache.has(name.toLowerCase());
+    const key = nameKey(name);
+    return this.labelCache.has(key) || this._labelMacro(key) !== undefined;
   }
 
+  /** Constant label record. */
   getLabel(name: string): LabelRecord | undefined {
-    return this.labelCache.get(name.toLowerCase());
+    return this.labelCache.get(nameKey(name));
   }
 
+  /** All constant labels. */
   getAllLabels(): Map<string, LabelRecord> {
     return this.labelCache;
+  }
+
+  /** labels.DBF tables read from outside the workspace (the Include project). */
+  getExternalLabelFiles(): readonly string[] {
+    return this._externalLabelFiles;
   }
 
   /** Find the function containing a given position (includes header and body) */
@@ -947,8 +1150,13 @@ export class Indexer {
     return null;
   }
 
-  /** Dispose of resources (EventEmitter) */
+  /** Dispose of resources (EventEmitter, pending debounce timers) */
   dispose(): void {
+    this._debouncedIndex.cancelAll();
+    this._debouncedReindexLabels.cancelAll();
+    this._debouncedReindexLocvar.cancelAll();
+    this._debouncedSyncFromDisk.cancelAll();
+    this._disposeExternalWatchers();
     this._onIndexed.dispose();
   }
 }
