@@ -73,58 +73,84 @@ export function formatScopeType(
 
 export interface ParamBounds {
   min: number;
+  /** Infinity for a variadic list. */
   max: number;
   normalized: string[];
 }
 
-/** Compute min/max argument counts from parameter list, handling optional params */
-export function computeParamBounds(params: string[]): ParamBounds {
-  let min = 0;
-  let max = 0;
-  let inOptional = false;
-  const normalized: string[] = [];
-
-  for (const raw of params || []) {
-    if (!raw) continue;
-
-    const openCount = (raw.match(/\[/g) || []).length;
-    const closeCount = (raw.match(/\]/g) || []).length;
-    const fullyBracketed = openCount > 0 && openCount === closeCount;
-    const core = raw.replace(/[\[\]]/g, "").trim();
-
-    if (!core.length) {
-      if (openCount > closeCount) inOptional = true;
-      if (closeCount > openCount) inOptional = false;
-      continue;
-    }
-
-    normalized.push(core);
-    max++;
-
-    const hasDefault = /=/.test(raw);
-    const isOptional =
-      inOptional || hasDefault || fullyBracketed || openCount > 0;
-    if (!isOptional) min++;
-
-    if (openCount > closeCount) inOptional = true;
-    if (closeCount > openCount) inOptional = false;
-  }
-
-  return { min, max, normalized };
+interface ParamShape {
+  /** Parameter text without its optional-group brackets; "" for a bare bracket. */
+  core: string;
+  optional: boolean;
+  variadic: boolean;
 }
 
-/** Get array of boolean flags indicating which params are optional */
-export function getOptionalParamFlags(params: string[]): boolean[] {
-  let inOptional = false;
-  return params.map((p) => {
-    const openCount = (p.match(/\[/g) || []).length;
-    const closeCount = (p.match(/\]/g) || []).length;
-    const hasDefault = /=/.test(p);
-    const isOptional = inOptional || hasDefault || openCount > 0;
-    if (openCount > closeCount) inOptional = true;
-    if (closeCount > openCount) inOptional = false;
-    return isOptional;
+/**
+ * Classify parameter strings. A parameter is optional when it has a default
+ * (`INT a = 1`) or its text starts inside a `[...]` group. Groups may open on
+ * the previous parameter (`sText [`, `iLength] [`) and nest (`[a [, b]]`).
+ * `...` or a range such as `Tag1......Tag8` stands for any number of args.
+ */
+function paramShapes(params: string[]): ParamShape[] {
+  let depth = 0;
+  return (params || []).map((raw) => {
+    let core = "";
+    let coreDepth = -1;
+    let inStr = false;
+    for (let i = 0; i < (raw || "").length; i++) {
+      const ch = raw[i];
+      if (inStr) {
+        core += ch;
+        if (ch === "^" && i + 1 < raw.length) core += raw[++i];
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === "[") depth++;
+      else if (ch === "]") depth = Math.max(0, depth - 1);
+      else {
+        if (coreDepth < 0 && !/\s/.test(ch)) coreDepth = depth;
+        if (ch === '"') inStr = true;
+        core += ch;
+      }
+    }
+    core = core.replace(/\s+/g, " ").trim();
+    const eq = core.indexOf("=");
+    const decl = eq === -1 ? core : core.slice(0, eq);
+    const variadic = /\.\./.test(decl);
+    return {
+      core,
+      optional: !core || coreDepth > 0 || eq !== -1 || variadic,
+      variadic,
+    };
   });
+}
+
+/**
+ * Argument count bounds for a parameter list. Every argument up to the last
+ * required one must be passed, even when an earlier one has a default: the
+ * compiler binds arguments by position (W1004 / E2022 / E2057 otherwise).
+ */
+export function computeParamBounds(params: string[]): ParamBounds {
+  let min = 0;
+  let count = 0;
+  let variadic = false;
+  const normalized: string[] = [];
+  for (const s of paramShapes(params)) {
+    if (!s.core) continue;
+    normalized.push(s.core);
+    if (s.variadic) {
+      variadic = true;
+      continue;
+    }
+    count++;
+    if (!s.optional) min = count;
+  }
+  return { min, max: variadic ? Infinity : count, normalized };
+}
+
+/** Per-parameter flag: has a default, is bracketed as optional, or is variadic. */
+export function getOptionalParamFlags(params: string[]): boolean[] {
+  return paramShapes(params).map((s) => s.optional);
 }
 
 // ============================================================================
