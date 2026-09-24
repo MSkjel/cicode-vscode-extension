@@ -113,49 +113,33 @@
           "default": [],
           "description": "Regular expressions matched against workspace-relative file paths to exclude from indexing."
         },
+        "cicode.indexing.includeProjectPath": {
+          "type": "string",
+          "default": "",
+          "description": "Folder of the Include project, or its labels.DBF. The compiler adds Include to every project, so its labels are known in every file. Empty: found automatically (the project named Include in the MASTER.DBF of the User folder above the workspace, then under cicode.avevaPath, then in the User folders of the installed Plant SCADA versions, the one belonging to cicode.avevaPath first). Not used when the workspace contains the Include project."
+        },
         "cicode.signatureOverrides": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": [
-            "STRING SQLErrMsg([INT hHandle])",
-            "STRING MapOpen(STRING sMapName, INT nOpenMode [, STRING sCloseCallback])",
-            "STRING StrToLocalText(STRING sText)",
-            "INT DevClose(INT hDev [, INT Mode])",
-            "INT _ObjectCallMethod(INT hObject, STRING sMethod [, OBJECT vParam1] [, OBJECT vParam2] [, OBJECT vParam3] [, OBJECT vParam4] [, OBJECT vParam5] [, OBJECT vParam6] [, OBJECT vParam7] [, OBJECT vParam8] [, OBJECT vParam9] [, OBJECT vParam10])",
-            "INT ErrSetHw(INT Device, INT Error [, INT DeviceType])",
-            "INT TrnBrowseClose(INT iSession)",
-            "INT DspPopupMenu([INT iMenuNumber] [, STRING sMenuItems] [, INT XPos] [, INT YPos] [, INT bScaleX] [, INT bScaleY])",
-            "INT FormEdit(INT Col, INT Row, STRING Text, INT Width [, INT Height] [, INT bReadOnly] [, INT maxTextLength])",
-            "INT DspGetMouseOver([INT nAN])",
-            "INT MapValueSet(STRING sMapName, STRING sKeyName, VARIANT Value [, INT nSetMode])",
-            "UNKNOWN SubscriptionGetTag(INT iHandle [, INT sOffset])",
-            "STRING UserVerify(STRING sName, STRING sPassword [, sAccess] [, sPrivGlobal] [, sPriv1] [, sPriv2] [, sPriv3] [, sPriv4] [, sPriv5] [, sPriv6] [, sPriv7] [, sPriv8])",
-            "UNKNOWN EquipGetProperty(STRING Name, STRING Field [, INT Mode] [, STRING Cluster])",
-            "INT TimestampDifference(TIMESTAMP Timestamp1, TIMESTAMP Timestamp2 [, INT Part] [, INT bCumulative])",
-            "STRING SQLGetField(INT hGeneral, STRING sField [, INT nRowIndex])",
-            "INT ServerBrowseOpen([STRING Filter] [, STRING Fields] [, STRING Clusters])",
-            "TIMESTAMP VariableTimestamp(Variable [, INT Type])",
-            "STRING MenuNodeGetTargetPage([INT hNode])",
-            "INT MenuNodeSetExpanded(hNode, iValue)",
-            "UNKNOWN DLLCallEx(hFunction [, OBJECT vParam1] [, OBJECT vParam2] [, OBJECT vParam3] [, OBJECT vParam4] [, OBJECT vParam5] [, OBJECT vParam6] [, OBJECT vParam7] [, OBJECT vParam8] [, OBJECT vParam9] [, OBJECT vParam10])",
-            "INT TrnNew(INT nAN, STRING Trend [, Tag1] [, Tag2] [, Tag3] [, Tag4] [, Tag5] [, Tag6] [, Tag7] [, Tag8] [, STRING sClusterName])",
-            "UNKNOWN SubscriptionGetTimestamp(INT iHandle [, STRING sAttribute])",
-            "STRING QualityToStr(QUALITY quality, INT part [, INT localized])",
-            "UNKNOWN SubscriptionGetValue(iHandle [, INT sOffset])"
-          ],
-          "description": "Override or add function signatures. Each entry is a Cicode signature string, e.g. \"STRING BlaBla(STRING sLol, [STRING sOptional])\" or \"VOID Test2()\". Optional parameters use square brackets."
+          "default": [],
+          "description": "Override or add function signatures. Each entry is a Cicode signature string, e.g. \"STRING MyFormat(STRING sText, [STRING sPicture])\" or \"INT MyInit()\". Optional parameters use square brackets or a default value (\"INT nMode = 0\"). Built-in signatures come from the compiler's own function table (Bin\\FUNC0.DBF), so overrides are only needed for functions it doesn't know."
         },
         "cicode.avevaPath": {
           "type": "string",
           "default": "C:/Program Files (x86)/AVEVA Plant SCADA",
-          "description": "Path to AVEVA Plant SCADA installation folder. The extension will automatically find the help files."
+          "description": "Path to the AVEVA Plant SCADA installation folder. The extension reads the compiler's built-in function table from its Bin folder (Bin\\FUNC0.DBF) and finds the help files automatically."
+        },
+        "cicode.helpServerUrl": {
+          "type": "string",
+          "default": "https://localhost:28808",
+          "description": "Root URL of the local AVEVA help server (Product Help Viewer Service, 2023 R2 and later), used by 'Open full help' and the 'Cicode: Open Help for Symbol' command."
         },
         "cicode.hover.showHelpLink": {
           "type": "boolean",
           "default": true,
-          "description": "Show 'Open full help' link in hovers for builtins."
+          "description": "Show an 'Open full help' link in hovers of functions that have an AVEVA help page."
         },
         "cicode.diagnostics.enable": {
           "type": "boolean",

@@ -1,14 +1,31 @@
 import * as fs from "fs";
-import { CICODE_TYPES_PATTERN } from "../../shared/constants";
 import * as path from "path";
 import * as vscode from "vscode";
 import * as cheerio from "cheerio";
 import { BuiltinFunction } from "./types";
-import { error } from "../../shared/utils";
+import { computeParamBounds, error, escapeRegExp } from "../../shared/utils";
+import { NAME_PATTERN } from "../../shared/constants";
+import { nameKey } from "../../shared/textUtils";
+import { Func0Row, findFunc0, func0Entry, readFunc0 } from "./func0";
+import {
+  SIGNATURE_TYPES,
+  paramName,
+  parseCallText,
+  splitSignatureParams,
+} from "./signature";
+
+// Built-in functions are assembled from three sources:
+//   - the compiler's own table, Bin\FUNC0.DBF of the installation (names,
+//     return and argument types, exact argument bounds, obsolete flags), or
+//     the copy shipped in builtins\builtinFunctions.json without an install;
+//   - the shipped list of documented functions that are really Cicode in
+//     AVEVA library projects or Include label macros (not compiler builtins);
+//   - help text scraped from the local AVEVA documentation (cached in global
+//     storage), with the shipped help text as the fallback.
 
 let builtinCache: Map<string, BuiltinFunction> = new Map();
 const CACHE_FILE = "builtinFunctions.json";
-const CACHE_VERSION = 8;
+const CACHE_VERSION = 11;
 
 const CONTENT_FOLDER_NAME = "CicodeReferenceCitectHTML";
 
@@ -18,10 +35,38 @@ const CONTENT_FOLDER_NAME = "CicodeReferenceCitectHTML";
 const PORTAL_DOCS_SUBPATH = ["AVEVA", "Product Documentation"];
 const PORTAL_PRODUCT = "Plant SCADA";
 
+// The portal's content\en folder holds every Plant SCADA topic, including the
+// CitectVBA function reference and the Graphics Builder Automation interface,
+// whose topics look exactly like Cicode function topics (and reuse names such
+// as Time, Date, SendKeys and CreateObject). Only topics listed under the
+// "Cicode Reference" node of content\en\toc.json are scraped.
+const PORTAL_TOC_FILE = "toc.json";
+const CICODE_REFERENCE_TOC_ID = "1060490";
+const CICODE_REFERENCE_TOC_NAME = "cicode reference";
+// Fallback when the Cicode Reference node can't be found: skip these subtrees
+// ("VBA Function Reference", "Graphics Builder Automation Interface").
+const NON_CICODE_TOC_IDS = new Set(["1218011", "1152714"]);
+const NON_CICODE_TOC_NAME_RE = /\bVBA\b|Graphics Builder Automation/i;
+
 // Cached resolved paths
 let resolvedContentPath: string | null = null;
 let resolvedPortalPath: string | null = null;
-let resolvedHelpRoot: string | null = null;
+// Whether resolvedPortalPath came from the user's cicode.avevaPath rather than
+// the %ProgramData% auto-discovery.
+let portalViaOverride = false;
+
+// Product folder name the portal scrape resolved (e.g. "Plant SCADA").
+// Persisted in the help cache so help URLs route to the right product.
+let portalProductName: string | null = null;
+
+// Help text from the last scrape (or the cache), keyed by lower-case name.
+let helpDocs: Record<string, BuiltinFunction> = {};
+
+// FUNC0.DBF the current builtins were read from; null = the shipped copy.
+let func0Path: string | null = null;
+
+// Assembled entries before signature overrides.
+let pristineBuiltins: Map<string, BuiltinFunction> | null = null;
 
 /**
  * Does this directory directly contain Cicode help topic files (.htm/.html)?
@@ -78,31 +123,6 @@ function findContentFolder(baseDir: string, maxDepth = 7): string | null {
 }
 
 /**
- * Find the help root folder (containing Default.htm)
- */
-function findHelpRoot(baseDir: string, maxDepth = 5): string | null {
-  if (maxDepth <= 0 || !fs.existsSync(baseDir)) return null;
-
-  try {
-    // Check if Default.htm exists in this folder
-    if (fs.existsSync(path.join(baseDir, "Default.htm"))) {
-      return baseDir;
-    }
-
-    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const fullPath = path.join(baseDir, entry.name);
-      const found = findHelpRoot(fullPath, maxDepth - 1);
-      if (found) return found;
-    }
-  } catch {
-    // Permission denied or other error, skip this directory
-  }
-  return null;
-}
-
-/**
  * Resolve the content path from user setting
  */
 export function resolveContentPath(
@@ -140,21 +160,32 @@ export function resolveContentPath(
  * `content\en` folder with numeric-id topic files, at least one of which is a
  * Cicode function reference (has a Syntax section)?
  */
-function portalDirHasCicode(dir: string): boolean {
+async function portalDirHasCicode(dir: string): Promise<boolean> {
   try {
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".html"));
+    const files = (await fs.promises.readdir(dir)).filter((f) =>
+      f.endsWith(".html"),
+    );
     if (files.length < 50) return false; // not the full doc set
-    // Sample a bounded number of files for the function-reference signature.
+    // Sample a bounded number of files, reading only the head of each, for
+    // the function-reference signature.
+    const head = Buffer.alloc(8192);
     let checked = 0;
     for (const f of files) {
-      if (checked >= 200) break;
+      if (checked >= 100) break;
       checked++;
-      const html = fs.readFileSync(path.join(dir, f), "utf8");
-      if (
-        html.includes('class="subheading">Syntax') &&
-        /class="strong">\s*[A-Za-z_][\w]*\s*<\/span>\(/.test(html)
-      ) {
-        return true;
+      let fh: fs.promises.FileHandle | undefined;
+      try {
+        fh = await fs.promises.open(path.join(dir, f), "r");
+        const { bytesRead } = await fh.read(head, 0, head.length, 0);
+        const html = head.toString("utf8", 0, bytesRead);
+        if (
+          html.includes('class="subheading">Syntax') &&
+          /class="strong">\s*[A-Za-z_][\w]*\s*<\/span>\(/.test(html)
+        ) {
+          return true;
+        }
+      } finally {
+        await fh?.close();
       }
     }
   } catch {
@@ -169,28 +200,51 @@ function portalDirHasCicode(dir: string): boolean {
  * then scans the other registered products. Returns null when the portal
  * documentation is not installed.
  */
-export function resolvePortalContentPath(
+export async function resolvePortalContentPath(
   cfg: () => vscode.WorkspaceConfiguration,
-): string | null {
+): Promise<string | null> {
   if (resolvedPortalPath) return resolvedPortalPath;
 
-  // Allow an explicit override: avevaPath may itself point at a portal folder.
+  // Allow an explicit override: avevaPath may point at the portal docs root,
+  // at a portal product folder, or directly at its content\en folder.
   const override =
     (cfg().get("cicode.avevaPath") as string | undefined)?.trim() || "";
 
-  const bases: string[] = [];
-  const programData = process.env.ProgramData || "C:\\ProgramData";
-  bases.push(path.join(programData, ...PORTAL_DOCS_SUBPATH));
-  if (override) bases.push(override);
+  const accept = (dir: string, viaOverride: boolean): string => {
+    resolvedPortalPath = dir;
+    portalViaOverride = viaOverride;
+    // Layout is <Product>\content\en, so the product folder is the
+    // grandparent of the accepted directory.
+    portalProductName = path.basename(path.dirname(path.dirname(dir)));
+    return dir;
+  };
 
-  for (const base of bases) {
+  if (override) {
+    // The override itself is a content\en folder.
+    if (await portalDirHasCicode(override)) return accept(override, true);
+
+    // The override is a product folder containing content\en.
+    const direct = path.join(override, "content", "en");
+    if (fs.existsSync(direct) && (await portalDirHasCicode(direct)))
+      return accept(direct, true);
+  }
+
+  // The user's override takes precedence over the %ProgramData% default.
+  const bases: { dir: string; viaOverride: boolean }[] = [];
+  if (override) bases.push({ dir: override, viaOverride: true });
+  const programData = process.env.ProgramData || "C:\\ProgramData";
+  bases.push({
+    dir: path.join(programData, ...PORTAL_DOCS_SUBPATH),
+    viaOverride: false,
+  });
+
+  for (const { dir: base, viaOverride } of bases) {
     if (!fs.existsSync(base)) continue;
 
     // Preferred: the Plant SCADA product folder.
     const preferred = path.join(base, PORTAL_PRODUCT, "content", "en");
-    if (fs.existsSync(preferred) && portalDirHasCicode(preferred)) {
-      resolvedPortalPath = preferred;
-      return preferred;
+    if (fs.existsSync(preferred) && (await portalDirHasCicode(preferred))) {
+      return accept(preferred, viaOverride);
     }
 
     // Otherwise scan all product folders for one carrying Cicode topics.
@@ -198,9 +252,8 @@ export function resolvePortalContentPath(
       for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
         const dir = path.join(base, entry.name, "content", "en");
-        if (fs.existsSync(dir) && portalDirHasCicode(dir)) {
-          resolvedPortalPath = dir;
-          return dir;
+        if (fs.existsSync(dir) && (await portalDirHasCicode(dir))) {
+          return accept(dir, viaOverride);
         }
       }
     } catch {
@@ -211,26 +264,14 @@ export function resolvePortalContentPath(
   return null;
 }
 
-/**
- * Resolve the help root path (folder containing Default.htm)
- */
-export function resolveHelpRoot(
-  cfg: () => vscode.WorkspaceConfiguration,
-): string | null {
-  if (resolvedHelpRoot) return resolvedHelpRoot;
+/** Product folder name resolved by the portal scrape (e.g. "Plant SCADA"). */
+export function getPortalProduct(): string | null {
+  return portalProductName;
+}
 
-  const avevaPath =
-    (cfg().get("cicode.avevaPath") as string | undefined)?.trim() || "";
-
-  if (!avevaPath) return null;
-
-  const found = findHelpRoot(avevaPath);
-  if (found) {
-    resolvedHelpRoot = found;
-    return found;
-  }
-
-  return null;
+/** FUNC0.DBF the builtins were read from, or null when the shipped copy is used. */
+export function getFunc0Path(): string | null {
+  return func0Path;
 }
 
 /**
@@ -239,71 +280,198 @@ export function resolveHelpRoot(
 export function clearPathCache(): void {
   resolvedContentPath = null;
   resolvedPortalPath = null;
-  resolvedHelpRoot = null;
+  portalViaOverride = false;
 }
 
-function asMap(
-  obj: Record<string, BuiltinFunction> | undefined | null,
-): Map<string, BuiltinFunction> {
-  const m = new Map<string, BuiltinFunction>();
-  for (const k of Object.keys(obj || {}))
-    m.set(k, (obj as Record<string, BuiltinFunction>)[k]);
-  return m;
+/**
+ * Did the user set cicode.avevaPath themselves (at any scope), as opposed to
+ * relying on the package.json default?
+ */
+function avevaPathIsExplicit(
+  cfg: () => vscode.WorkspaceConfiguration,
+): boolean {
+  const i = cfg().inspect<string>("cicode.avevaPath");
+  const v = i?.workspaceFolderValue ?? i?.workspaceValue ?? i?.globalValue;
+  return typeof v === "string" && v.trim() !== "";
+}
+
+/** Data shipped in builtins\builtinFunctions.json. */
+interface ShippedBuiltins {
+  /** FUNC0.DBF rows of the Plant SCADA release the file was generated from. */
+  func0: Func0Row[];
+  /** Documented functions that are library Cicode or label macros, with their real signatures. */
+  library: Record<string, BuiltinFunction>;
+  /** Help text per lower-case name. */
+  docs: Record<string, BuiltinFunction>;
+  /** Help topic names that differ from the function they document (lower-case). */
+  docAliases: Record<string, string>;
+  /** Documented names that are not callable (lower-case). */
+  excluded: string[];
+}
+
+function readShipped(context: vscode.ExtensionContext): ShippedBuiltins {
+  const empty: ShippedBuiltins = {
+    func0: [],
+    library: {},
+    docs: {},
+    docAliases: {},
+    excluded: [],
+  };
+  try {
+    const packaged = context.asAbsolutePath(
+      path.join("builtins", "builtinFunctions.json"),
+    );
+    const obj = JSON.parse(fs.readFileSync(packaged, "utf8"));
+    return {
+      func0: Array.isArray(obj?.func0) ? obj.func0 : [],
+      library: obj?.library ?? {},
+      docs: obj?.docs ?? {},
+      docAliases: obj?.docAliases ?? {},
+      excluded: Array.isArray(obj?.excluded) ? obj.excluded : [],
+    };
+  } catch (e) {
+    error("Cicode: Failed to read the shipped builtin list:", e);
+    return empty;
+  }
+}
+
+/**
+ * Copy help text (not the signature) from a scraped or shipped doc entry.
+ * Topics often name a parameter differently in the signature and in its
+ * description ("AN" vs "nAN"); with one description per parameter they are
+ * matched by position.
+ */
+function withHelp(
+  fn: BuiltinFunction,
+  help: BuiltinFunction | undefined,
+): BuiltinFunction {
+  if (!help) return fn;
+  let paramDocs = help.paramDocs ?? fn.paramDocs;
+  if (paramDocs) {
+    const keys = Object.keys(paramDocs);
+    const names = fn.params.filter((p) => p !== "...").map(paramName);
+    if (keys.length === names.length && !names.every((n) => n in paramDocs!))
+      paramDocs = Object.fromEntries(
+        names.map((n, i) => [n, paramDocs![keys[i]]]),
+      );
+  }
+  return {
+    ...fn,
+    doc: help.doc || fn.doc || "",
+    returns: help.returns ?? fn.returns,
+    paramDocs,
+    helpId: help.helpId ?? fn.helpId,
+    helpPath: help.helpPath ?? fn.helpPath,
+  };
+}
+
+/**
+ * Assemble the builtin list. FUNC0 rows are the compiler's builtins; shipped
+ * library and label entries fill in documented names FUNC0 lacks; any other
+ * documented name is kept without an origin (it may come from a library
+ * project the extension doesn't know), except the known non-callable ones.
+ */
+function assemble(
+  rows: Func0Row[],
+  shipped: ShippedBuiltins,
+  scraped: Record<string, BuiltinFunction>,
+): Record<string, BuiltinFunction> {
+  const docs: Record<string, BuiltinFunction> = { ...scraped };
+  for (const [from, to] of Object.entries(shipped.docAliases)) {
+    if (scraped[from] && !scraped[to]) docs[to] = scraped[from];
+    delete docs[from];
+  }
+  const helpFor = (key: string) => docs[key] ?? shipped.docs[key];
+
+  const out: Record<string, BuiltinFunction> = {};
+  for (const row of rows) {
+    const key = row[0].toLowerCase();
+    const help = helpFor(key);
+    out[key] = withHelp(func0Entry(row, help?.params), help);
+  }
+  for (const [key, fn] of Object.entries(shipped.library)) {
+    if (!out[key]) out[key] = withHelp({ ...fn }, helpFor(key));
+  }
+  const excluded = new Set(shipped.excluded);
+  for (const [key, fn] of Object.entries(docs)) {
+    if (!out[key] && !excluded.has(key)) out[key] = { ...fn };
+  }
+  return out;
+}
+
+/** Rebuild builtinCache from FUNC0, the shipped data and the help cache. */
+function assembleBuiltins(
+  context: vscode.ExtensionContext,
+  cfg: () => vscode.WorkspaceConfiguration,
+): void {
+  const shipped = readShipped(context);
+  const avevaPath =
+    (cfg().get("cicode.avevaPath") as string | undefined)?.trim() || "";
+  const file = findFunc0(avevaPath);
+  const live = file ? readFunc0(file) : null;
+  func0Path = live ? file : null;
+  builtinCache = new Map(
+    Object.entries(assemble(live ?? shipped.func0, shipped, helpDocs)),
+  );
+  pristineBuiltins = null;
+  applySignatureOverrides(cfg);
+}
+
+function loadHelpCache(context: vscode.ExtensionContext): boolean {
+  const file = path.join(context.globalStorageUri.fsPath, CACHE_FILE);
+  try {
+    if (!fs.existsSync(file)) return false;
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (data?.v !== CACHE_VERSION || !data?.docs) return false;
+    if (!Object.keys(data.docs).length) return false;
+    helpDocs = data.docs;
+    portalProductName =
+      typeof data.product === "string" && data.product ? data.product : null;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function saveHelpCache(context: vscode.ExtensionContext): void {
+  const file = path.join(context.globalStorageUri.fsPath, CACHE_FILE);
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        v: CACHE_VERSION,
+        product: portalProductName ?? undefined,
+        docs: helpDocs,
+      }),
+    );
+  } catch (e) {
+    error("Cicode: Failed to save builtin cache:", file, e);
+  }
 }
 
 export async function initBuiltins(
   context: vscode.ExtensionContext,
   cfg: () => vscode.WorkspaceConfiguration,
 ): Promise<void> {
-  const file = path.join(context.globalStorageUri.fsPath, CACHE_FILE);
-
-  const loadFromDisk = (): boolean => {
+  if (!loadHelpCache(context)) {
     try {
-      if (!fs.existsSync(file)) return false;
-      const data = JSON.parse(fs.readFileSync(file, "utf8"));
-      if (data?.v !== CACHE_VERSION || !data?.functions) return false;
-      builtinCache = asMap(data.functions as Record<string, BuiltinFunction>);
-      return builtinCache.size > 0;
-    } catch {
-      return false;
+      await rebuildBuiltins(context, cfg);
+      return;
+    } catch (e) {
+      error("Cicode: Failed to rebuild builtins from help files:", e);
+      helpDocs = {};
     }
-  };
-
-  const loadFromShipped = (): boolean => {
-    try {
-      const packaged = context.asAbsolutePath(
-        path.join("builtins", "builtinFunctions.json"),
-      );
-      if (!fs.existsSync(packaged)) return false;
-      const obj = JSON.parse(fs.readFileSync(packaged, "utf8"));
-      const functions = (obj?.functions ?? obj) as
-        | Record<string, BuiltinFunction>
-        | undefined;
-      if (!functions) return false;
-      builtinCache = asMap(functions);
-      return builtinCache.size > 0;
-    } catch {
-      return false;
-    }
-  };
-
-  if (loadFromDisk()) {
-    applySignatureOverrides(cfg);
-    return;
   }
+  assembleBuiltins(context, cfg);
+}
 
-  try {
-    await rebuildBuiltins(context, cfg);
-  } catch (e) {
-    error("Cicode: Failed to rebuild builtins from help files:", e);
-  }
-  if (loadFromDisk()) {
-    applySignatureOverrides(cfg);
-    return;
-  }
-
-  loadFromShipped();
-  applySignatureOverrides(cfg);
+/** Re-read FUNC0 and reassemble with the cached help text (no help scrape). */
+export function reloadBuiltins(
+  context: vscode.ExtensionContext,
+  cfg: () => vscode.WorkspaceConfiguration,
+): void {
+  assembleBuiltins(context, cfg);
 }
 
 function squish(s: string): string {
@@ -318,13 +486,11 @@ function extractSummary($: cheerio.CheerioAPI): string {
   return squish(firstBody);
 }
 
+/** A return type named by the first word of the Flare "Return Value" text. */
 function extractReturnType($: cheerio.CheerioAPI): string {
   const retText = $("p.SubHeading:contains('Return Value')").next("p").text();
-  if (!retText) return "UNKNOWN";
-  const first = squish(retText).split(/\s+/)[0] || "";
-  return new RegExp(`^(${CICODE_TYPES_PATTERN})$`, "i").test(first)
-    ? first.toUpperCase()
-    : "UNKNOWN";
+  const first = (squish(retText).split(/\s+/)[0] || "").toUpperCase();
+  return SIGNATURE_TYPES.has(first) ? first : "UNKNOWN";
 }
 
 function extractReturnsDoc($: cheerio.CheerioAPI): string | undefined {
@@ -342,8 +508,6 @@ function extractParamDocs($: cheerio.CheerioAPI): Record<string, string> {
     if (!paramDocs[name]) paramDocs[name] = desc;
   };
 
-  const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
   $("p").each((_, el) => {
     const $p = $(el);
 
@@ -352,7 +516,7 @@ function extractParamDocs($: cheerio.CheerioAPI): Record<string, string> {
       if (em.length) {
         const paramName = em.text();
         const label = new RegExp(
-          "^\\s*" + escapeRe(paramName) + "\\s*[:\\-–—]?\\s*",
+          "^\\s*" + escapeRegExp(paramName) + "\\s*[:\\-\u2013\u2014]?\\s*",
           "i",
         );
         add(paramName, squish($p.text().replace(label, "")));
@@ -375,11 +539,24 @@ function extractParamDocs($: cheerio.CheerioAPI): Record<string, string> {
     }
   });
 
-  return paramDocs;
+  return cleanParamDocs(paramDocs);
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Drop parameter-doc entries that are a signature rather than a description. */
+function cleanParamDocs(docs: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(docs)) {
+    if (/[,(]/.test(k) || /^[A-Za-z_]\w*\s*\(.*\)$/.test(v)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+/** Return type named by the first word of a signature ("INT Foo(...)"). */
+function signatureReturnType(head: string): string {
+  const tokens = head.split(/\s+/).filter(Boolean);
+  const t = (tokens[0] || "").toUpperCase();
+  return tokens.length >= 2 && SIGNATURE_TYPES.has(t) ? t : "UNKNOWN";
 }
 
 /**
@@ -396,6 +573,10 @@ function escapeRegExp(s: string): string {
  *     <p class="parameterdefinition">The alarm record number...</p>
  *     <p class="subheading">Return Value</p>
  *     <p class="paragraph">0 if successful...</p>
+ *
+ * A few topics (ScheduleItemDelete, StrToLocalText, TrnBrowseClose) have no
+ * Syntax subheading; their signature paragraph comes before the first
+ * subheading.
  */
 function parsePortalTopic(
   $: cheerio.CheerioAPI,
@@ -409,11 +590,29 @@ function parsePortalTopic(
 
   const helpId = (root.attr("data-aitid") || idFromFile).trim();
 
+  // Many topics glue the return type to the name span
+  // (`INT<span class="strong">ArrayDestroy</span>(...)`), which .text()
+  // flattens to "INTArrayDestroy(...)". Join the inline children with a
+  // space wherever two words would otherwise run together.
+  const signatureOf = (el: cheerio.Cheerio<any>) => ({
+    text: squish(
+      el
+        .contents()
+        .toArray()
+        .reduce((acc, node) => {
+          const t = $(node).text();
+          return /\w$/.test(acc) && /^\w/.test(t) ? `${acc} ${t}` : acc + t;
+        }, ""),
+    ),
+    name: squish(el.find(".strong").first().text()),
+  });
+
   // Walk the topic's children in document order, tracking the current
   // subheading so paragraphs land in the right bucket.
   let section = "";
   let summary = "";
-  let sigText = "";
+  let sig: { text: string; name: string } | null = null;
+  let preSig: { text: string; name: string } | null = null;
   let returnsDoc = "";
   const paramDocs: Record<string, string> = {};
   let pendingTerm: string | null = null;
@@ -443,61 +642,136 @@ function parsePortalTopic(
     if ($el.hasClass("paragraph")) {
       const txt = squish($el.text());
       if (!txt) return;
-      if (!section && !summary)
-        summary = txt; // before the first subheading
-      else if (section === "syntax" && !sigText) sigText = txt;
-      else if (section === "return value" && !returnsDoc) returnsDoc = txt;
+      if (!section) {
+        if (!summary) summary = txt;
+        else if (!preSig && $el.find(".strong").length && txt.includes("("))
+          preSig = signatureOf($el);
+      } else if (section === "syntax" && !sig) {
+        sig = signatureOf($el);
+      } else if (section === "return value" && !returnsDoc) {
+        returnsDoc = txt;
+      }
     }
   });
 
   // A real Cicode function topic has a signature "NAME(...)" (optionally
   // prefixed by a return type). Anything else is a concept/overview page.
-  if (
-    !sigText ||
-    !new RegExp("\\b" + escapeRegExp(name) + "\\s*\\(").test(sigText)
-  )
-    return null;
+  // Cicode is case-insensitive and some topics differ from their heading in
+  // case only (SOEDismount vs SOEDisMount). A few topics misspell the name in
+  // the signature (DspAnInRgn vs "pAnInRgn"); they are still accepted when
+  // the bold signature name is followed by "(", and keep the heading's name.
+  const callRe = (n: string) =>
+    new RegExp("\\b" + escapeRegExp(n) + "\\s*\\(", "i");
+  const isSignature = (s: { text: string; name: string } | null) =>
+    !!s &&
+    !!s.text &&
+    (callRe(name).test(s.text) ||
+      (/^[A-Za-z_]\w*$/.test(s.name) && callRe(s.name).test(s.text)));
+  const chosen = isSignature(sig) ? sig! : isSignature(preSig) ? preSig! : null;
+  if (!chosen) return null;
 
-  let params: string[] = [];
-  const m = sigText.match(/\((.*)\)/);
-  if (m) {
-    params = m[1]
-      .split(",")
-      .map((p) => squish(p.replace(/\s+/g, " ")))
-      .filter(Boolean);
-  }
-
-  // Return type: a type token preceding the function name in the signature.
-  let returnType = "UNKNOWN";
-  const head = sigText.slice(0, sigText.indexOf("(")).trim();
-  const tokens = head.split(/\s+/).filter(Boolean);
-  if (
-    tokens.length >= 2 &&
-    new RegExp(`^(${CICODE_TYPES_PATTERN})$`, "i").test(tokens[0])
-  ) {
-    returnType = tokens[0].toUpperCase();
-  }
-
+  const call = parseCallText(chosen.text);
   return {
     name,
-    returnType,
-    params,
+    returnType: signatureReturnType(call?.head ?? ""),
+    params: call?.params ?? [],
     doc: summary,
     returns: returnsDoc || undefined,
-    paramDocs,
+    paramDocs: cleanParamDocs(paramDocs),
     helpId,
   };
 }
 
+interface PortalTocItem {
+  name?: string;
+  id?: string;
+  items?: PortalTocItem[];
+}
+
+/**
+ * Topic ids to scrape, taken from the portal's toc.json: everything under the
+ * "Cicode Reference" node. If that node is missing, every toc topic except
+ * the VBA and Graphics Builder Automation references. Returns null when the
+ * toc can't be read, in which case the whole folder is scanned.
+ */
+async function portalCicodeTopicIds(
+  inputDir: string,
+): Promise<string[] | null> {
+  let items: PortalTocItem[];
+  try {
+    const toc = JSON.parse(
+      await fs.promises.readFile(path.join(inputDir, PORTAL_TOC_FILE), "utf8"),
+    );
+    if (!Array.isArray(toc?.items)) return null;
+    items = toc.items;
+  } catch {
+    return null;
+  }
+
+  const collect = (nodes: PortalTocItem[], ids: Set<string>): Set<string> => {
+    for (const n of nodes) {
+      if (n.id) ids.add(n.id);
+      if (n.items) collect(n.items, ids);
+    }
+    return ids;
+  };
+
+  const findRef = (nodes: PortalTocItem[]): PortalTocItem | undefined => {
+    for (const n of nodes) {
+      if (
+        n.id === CICODE_REFERENCE_TOC_ID ||
+        squish(n.name || "").toLowerCase() === CICODE_REFERENCE_TOC_NAME
+      )
+        return n;
+      const r = n.items && findRef(n.items);
+      if (r) return r;
+    }
+    return undefined;
+  };
+
+  const ref = findRef(items);
+  if (ref) return [...collect([ref], new Set())];
+
+  const excluded = (n: PortalTocItem) =>
+    (!!n.id && NON_CICODE_TOC_IDS.has(n.id)) ||
+    NON_CICODE_TOC_NAME_RE.test(n.name || "");
+  const ids = new Set<string>();
+  const walk = (nodes: PortalTocItem[]) => {
+    for (const n of nodes) {
+      if (excluded(n)) continue;
+      if (n.id) ids.add(n.id);
+      if (n.items) walk(n.items);
+    }
+  };
+  walk(items);
+  return ids.size ? [...ids] : null;
+}
+
 /** Scrape Cicode builtins from the Author-it portal content folder. */
-function scrapePortal(inputDir: string): Record<string, BuiltinFunction> {
+async function scrapePortal(
+  inputDir: string,
+): Promise<Record<string, BuiltinFunction>> {
   const out: Record<string, BuiltinFunction> = {};
-  for (const file of fs.readdirSync(inputDir)) {
-    if (path.extname(file).toLowerCase() !== ".html") continue;
+  const ids = await portalCicodeTopicIds(inputDir);
+  const files = ids
+    ? ids.filter((id) => /^[\w-]+$/.test(id)).map((id) => `${id}.html`)
+    : (await fs.promises.readdir(inputDir)).filter(
+        (f) => path.extname(f).toLowerCase() === ".html",
+      );
+  let processed = 0;
+  for (const file of files) {
+    // Yield to the event loop so the scrape doesn't starve the host.
+    if (++processed % 50 === 0) await new Promise((r) => setImmediate(r));
+    let html: string;
     try {
-      const html = fs.readFileSync(path.join(inputDir, file), "utf8");
-      // Cheap pre-filter to skip the thousands of non-function topics.
-      if (!html.includes('class="subheading">Syntax')) continue;
+      html = await fs.promises.readFile(path.join(inputDir, file), "utf8");
+    } catch {
+      continue; // toc entry without a topic file
+    }
+    try {
+      // Cheap pre-filter to skip category/overview (non-function) topics:
+      // a function topic has a bold name followed by "(".
+      if (!/class="strong">[^<]*<\/span>\s*\(/.test(html)) continue;
       const $ = cheerio.load(html);
       const fn = parsePortalTopic($, path.basename(file, path.extname(file)));
       if (fn) out[fn.name.toLowerCase()] = fn;
@@ -514,26 +788,78 @@ export async function rebuildBuiltins(
 ): Promise<Map<string, BuiltinFunction>> {
   // Clear cache to force re-resolution
   clearPathCache();
+  portalProductName = null;
 
+  helpDocs = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Window,
+      title: "Cicode: scanning AVEVA help documentation for builtins...",
+    },
+    () => scrapeHelp(cfg),
+  );
+  // An empty scrape isn't cached, so a later help install is picked up.
+  if (Object.keys(helpDocs).length) saveHelpCache(context);
+  else {
+    try {
+      fs.rmSync(path.join(context.globalStorageUri.fsPath, CACHE_FILE), {
+        force: true,
+      });
+    } catch {
+      // A cache that can't be removed is read again at the next activation.
+    }
+  }
+  assembleBuiltins(context, cfg);
+  return builtinCache;
+}
+
+async function scrapeHelp(
+  cfg: () => vscode.WorkspaceConfiguration,
+): Promise<Record<string, BuiltinFunction>> {
   // Prefer the 2023 R2+ Author-it web portal content: it is the copy that is
   // reliably installed and yields topic ids for the help-server deep-link.
-  const portalDir = resolvePortalContentPath(cfg);
-  if (portalDir) {
-    const portalOut = scrapePortal(portalDir);
-    if (Object.keys(portalOut).length) return save(context, portalOut);
+  const portalDir = await resolvePortalContentPath(cfg);
+
+  // ...unless the user explicitly pointed cicode.avevaPath at legacy Flare
+  // help and the portal was only auto-discovered under %ProgramData% (e.g. a
+  // side-by-side 2020 + 2023 R2 machine): honour the explicit choice.
+  if (portalDir && !portalViaOverride && avevaPathIsExplicit(cfg)) {
+    const flareDir = resolveContentPath(cfg);
+    const flareOut = flareDir ? await scrapeFlare(flareDir) : {};
+    if (Object.keys(flareOut).length) {
+      // Flare entries carry no portal topic ids, so no portal product applies.
+      portalProductName = null;
+      return flareOut;
+    }
   }
 
-  // Fallback: legacy MadCap Flare help files.
-  const inputDir = resolveContentPath(cfg);
-  const out: Record<string, BuiltinFunction> = {};
-  if (!inputDir || !fs.existsSync(inputDir)) return save(context, out);
+  if (portalDir) {
+    const portalOut = await scrapePortal(portalDir);
+    if (Object.keys(portalOut).length) return portalOut;
+  }
 
-  for (const file of fs.readdirSync(inputDir)) {
+  // Fallback: legacy MadCap Flare help files (2020 / file-based installs).
+  const inputDir = resolveContentPath(cfg);
+  if (!inputDir || !fs.existsSync(inputDir)) return {};
+  return scrapeFlare(inputDir);
+}
+
+/** Scrape Cicode builtins from a legacy MadCap Flare help content folder. */
+async function scrapeFlare(
+  inputDir: string,
+): Promise<Record<string, BuiltinFunction>> {
+  const out: Record<string, BuiltinFunction> = {};
+  let processed = 0;
+  for (const file of await fs.promises.readdir(inputDir)) {
     const ext = path.extname(file).toLowerCase();
     if (ext !== ".htm" && ext !== ".html") continue;
+    // Yield to the event loop so the scrape doesn't starve the host.
+    if (++processed % 50 === 0) await new Promise((r) => setImmediate(r));
 
     try {
-      const html = fs.readFileSync(path.join(inputDir, file), "utf8");
+      const html = await fs.promises.readFile(
+        path.join(inputDir, file),
+        "utf8",
+      );
       const $ = cheerio.load(html);
       const name = $(".pFunctionName").first().text().trim();
       if (!name) continue;
@@ -541,28 +867,15 @@ export async function rebuildBuiltins(
       let syntaxLine = $("p:contains('Syntax')").next("p").text().trim();
       if (!syntaxLine)
         syntaxLine = $("p:contains('Syntax')").next("pre").text().trim();
-
-      let params: string[] = [];
-      const m = syntaxLine.match(/\((.*)\)/);
-      if (m) {
-        params = m[1]
-          .split(",")
-          .map((p) => squish(p.replace(/\s+/g, " ")))
-          .filter(Boolean);
-      }
-
-      const summary = extractSummary($);
-      const returnsDoc = extractReturnsDoc($);
-      const returnType = extractReturnType($);
-      const paramDocs = extractParamDocs($);
+      const call = parseCallText(squish(syntaxLine));
 
       out[name.toLowerCase()] = {
         name,
-        returnType,
-        params,
-        doc: summary,
-        returns: returnsDoc,
-        paramDocs,
+        returnType: extractReturnType($),
+        params: call?.params ?? [],
+        doc: extractSummary($),
+        returns: extractReturnsDoc($),
+        paramDocs: extractParamDocs($),
         helpPath: file, // Just store filename, construct full path at runtime
       };
     } catch (e) {
@@ -570,69 +883,32 @@ export async function rebuildBuiltins(
     }
   }
 
-  return save(context, out);
-}
-
-function save(
-  context: vscode.ExtensionContext,
-  obj: Record<string, BuiltinFunction>,
-): Map<string, BuiltinFunction> {
-  const file = path.join(context.globalStorageUri.fsPath, CACHE_FILE);
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(
-      file,
-      JSON.stringify({ v: CACHE_VERSION, functions: obj }),
-    );
-  } catch (e) {
-    error("Cicode: Failed to save builtin cache:", file, e);
-  }
-  builtinCache = asMap(obj);
-  return builtinCache;
+  return out;
 }
 
 export function getBuiltins(): Map<string, BuiltinFunction> {
   return builtinCache;
 }
 
+const SIGNATURE_RE = new RegExp(
+  `^(${NAME_PATTERN})\\s+(${NAME_PATTERN})\\s*\\((.*)\\)\\s*$`,
+  "s",
+);
+
 /**
- * Parse a Cicode function signature string like:
- *   STRING BlaBla(STRING sLol, [STRING sOptional])
- * Returns a BuiltinFunction or null if the string can't be parsed.
- * Needed because the docs are full of shit :3
+ * Parse a signature override such as
+ *   STRING MyFormat(STRING sText, [STRING sPicture])
+ *   INT Foo(INT a [, INT b [, INT c]])
+ * Returns null when the string isn't "TYPE NAME(...)".
  */
 function parseSignature(sig: string): BuiltinFunction | null {
-  const m = sig.trim().match(/^(\w+)\s+(\w+)\s*\((.*)\)\s*$/is);
+  const m = sig.trim().match(SIGNATURE_RE);
   if (!m) return null;
   const [, returnType, name, rawParams] = m;
-
-  // Normalize "[, param]" → ", [param]" so commas are always at depth-0,
-  // then also ensure adjacent optional groups separated by space get a comma.
-  const normalized = rawParams
-    .replace(/\[,\s*/g, ", [") // [, X] → , [X]
-    .replace(/\]\s*\[/g, "], ["); // ] [X] → ], [X]
-
-  const params: string[] = [];
-  let depth = 0;
-  let cur = "";
-  for (const ch of normalized) {
-    if (ch === "[") depth++;
-    else if (ch === "]") depth--;
-    if (ch === "," && depth === 0) {
-      const p = cur.trim();
-      if (p) params.push(p);
-      cur = "";
-    } else {
-      cur += ch;
-    }
-  }
-  const last = cur.trim();
-  if (last) params.push(last);
-
   return {
     name,
     returnType: returnType.toUpperCase(),
-    params: params.filter(Boolean),
+    params: splitSignatureParams(rawParams),
     doc: "",
   };
 }
@@ -641,17 +917,28 @@ function parseSignature(sig: string): BuiltinFunction | null {
 export function applySignatureOverrides(
   cfg: () => vscode.WorkspaceConfiguration,
 ): void {
+  // Restore the pristine entries first so re-applying never stacks on
+  // previously overridden ones and removed overrides revert.
+  if (pristineBuiltins) builtinCache = new Map(pristineBuiltins);
+  else pristineBuiltins = new Map(builtinCache);
+
   const overrides: string[] = cfg().get("cicode.signatureOverrides", []);
   for (const sig of overrides) {
     const entry = parseSignature(sig);
     if (!entry) continue;
-    const key = entry.name.toLowerCase();
+    const key = nameKey(entry.name);
+    const { min, max } = computeParamBounds(entry.params);
+    const signature = {
+      returnType: entry.returnType,
+      params: entry.params,
+      minArgs: min,
+      maxArgs: Number.isFinite(max) ? max : -1,
+      argTypes: undefined,
+    };
     const existing = builtinCache.get(key);
     builtinCache.set(
       key,
-      existing
-        ? { ...existing, returnType: entry.returnType, params: entry.params }
-        : entry,
+      existing ? { ...existing, ...signature } : { ...entry, ...signature },
     );
   }
 }

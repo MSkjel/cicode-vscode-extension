@@ -4,7 +4,7 @@ import * as fs from "fs";
 import { cfg } from "./config";
 import {
   initBuiltins,
-  rebuildBuiltins,
+  reloadBuiltins,
   clearPathCache,
   applySignatureOverrides,
 } from "./core/builtins/builtins";
@@ -130,16 +130,26 @@ export async function activate(context: vscode.ExtensionContext) {
       }),
     );
 
-    // Invalidate builtin path cache when AVEVA path changes so the next help
-    // lookup resolves fresh paths instead of serving stale ones.
+    // A new AVEVA path invalidates the help paths and may name another
+    // installation's FUNC0.DBF; the help text is only rescanned on demand.
+    const rebuild = () =>
+      indexer
+        ?.buildAll()
+        .catch((err) => error("Cicode: Failed to rebuild index:", err));
     disposables.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration("cicode.avevaPath")) {
           clearPathCache();
-        }
-        if (e.affectsConfiguration("cicode.signatureOverrides")) {
+          reloadBuiltins(context, cfg);
+          rebuild();
+        } else if (e.affectsConfiguration("cicode.signatureOverrides")) {
           applySignatureOverrides(cfg);
-          indexer?.buildAll();
+          rebuild();
+        } else if (
+          e.affectsConfiguration("cicode.indexing.includeProjectPath") ||
+          e.affectsConfiguration("cicode.indexing.excludePatterns")
+        ) {
+          rebuild();
         }
       }),
     );

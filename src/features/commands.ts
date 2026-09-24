@@ -1,13 +1,39 @@
 import * as vscode from "vscode";
+import * as net from "net";
 import * as path from "path";
 import type { Indexer } from "../core/indexer/indexer";
-import { rebuildBuiltins, resolveContentPath } from "../core/builtins/builtins";
+import {
+  rebuildBuiltins,
+  resolveContentPath,
+  getPortalProduct,
+  getFunc0Path,
+} from "../core/builtins/builtins";
 import { insertDocSkeletonAtCursor } from "./docSkeleton";
+import { nameAt } from "./providers/nameAt";
+import { isNameChar } from "../shared/textUtils";
 
-// Local AVEVA help server (HelpDocumentationViewer, 2023 R2+). It serves the
-// Author-it documentation portal per product; topics are opened via the
+// Local AVEVA help server ("Product Help Viewer Service", 2023 R2+). It serves
+// the Author-it documentation portal per product; topics are opened via the
 // #showid/<id> hash route (the same one the portal's own cross-links use).
-const HELP_SERVER_BASE = "https://localhost:28808/Plant%20SCADA";
+// The root is configurable through cicode.helpServerUrl.
+const DEFAULT_HELP_SERVER_URL = "https://localhost:28808";
+const DEFAULT_PORTAL_PRODUCT = "Plant SCADA";
+
+/** Can a TCP connection be opened to the URL's host and port in time? */
+function isReachable(url: URL, timeoutMs = 1500): Promise<boolean> {
+  const port = Number(url.port) || (url.protocol === "http:" ? 80 : 443);
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  return new Promise((resolve) => {
+    const sock = net.connect({ host, port });
+    const done = (ok: boolean) => {
+      sock.destroy();
+      resolve(ok);
+    };
+    sock.setTimeout(timeoutMs, () => done(false));
+    sock.once("connect", () => done(true));
+    sock.once("error", () => done(false));
+  });
+}
 
 export function registerCommands(
   context: vscode.ExtensionContext,
@@ -20,7 +46,12 @@ export function registerCommands(
     vscode.commands.registerCommand("cicode.rebuildBuiltins", async () => {
       await rebuildBuiltins(context, cfg);
       await indexer.buildAll();
-      vscode.window.showInformationMessage("Cicode: rebuilt builtin cache.");
+      const func0 = getFunc0Path();
+      vscode.window.showInformationMessage(
+        func0
+          ? `Cicode: rebuilt builtin cache (compiler functions from ${func0}).`
+          : "Cicode: rebuilt builtin cache. FUNC0.DBF was not found, so the shipped function list is used; check cicode.avevaPath.",
+      );
     }),
   );
 
@@ -38,22 +69,58 @@ export function registerCommands(
         const editor = vscode.window.activeTextEditor;
         if (!symbol && !editor) return;
 
-        const name =
-          symbol ||
-          editor!.document.getText(
-            editor!.document.getWordRangeAtPosition(
-              editor!.selection.active,
-              /\w+/,
-            ),
-          );
+        let name = symbol;
+        if (!name) {
+          name = nameAt(editor!.document, editor!.selection.active)?.name;
+          if (!name) {
+            vscode.window.showInformationMessage(
+              "Cicode: place the cursor on a symbol to open its help.",
+            );
+            return;
+          }
+        }
 
-        const f = indexer.getAllFunctions().get(name.toLowerCase());
+        // A workspace copy of a documented library function (Include's
+        // PageGoto, ...) hides the builtin entry that carries the help link.
+        const found = editor
+          ? indexer.getFunctionFor(name, editor.document.uri.fsPath)
+          : indexer.getFunction(name);
+        const f =
+          found?.helpId || found?.helpPath
+            ? found
+            : (indexer.getBuiltinFunction(name) ?? found);
 
         // Preferred (2023 R2+): deep-link into the local AVEVA help server.
         // HelpDocumentationViewer serves the Author-it portal and resolves the
         // topic id via the same #showid route its own cross-references use.
         if (f?.helpId) {
-          const url = `${HELP_SERVER_BASE}/#showid/${encodeURIComponent(f.helpId)}`;
+          const root = (
+            cfg().get<string>("cicode.helpServerUrl") || DEFAULT_HELP_SERVER_URL
+          )
+            .trim()
+            .replace(/\/+$/, "");
+          let rootUrl: URL;
+          try {
+            rootUrl = new URL(root);
+          } catch {
+            vscode.window.showWarningMessage(
+              `Cicode: invalid cicode.helpServerUrl '${root}'.`,
+            );
+            return;
+          }
+          const product = getPortalProduct() || DEFAULT_PORTAL_PRODUCT;
+          const url = `${root}/${encodeURIComponent(product)}/#showid/${encodeURIComponent(f.helpId)}`;
+
+          // Don't send the user to a dead browser tab when the help service
+          // isn't running (common on engineering machines).
+          if (!(await isReachable(rootUrl))) {
+            const openAnyway = "Open Anyway";
+            const pick = await vscode.window.showWarningMessage(
+              `Cicode: AVEVA help server not reachable at ${root}. Check that the "Product Help Viewer Service" is running, or set cicode.helpServerUrl.`,
+              openAnyway,
+            );
+            if (pick !== openAnyway) return;
+          }
           await vscode.env.openExternal(vscode.Uri.parse(url));
           return;
         }
@@ -98,7 +165,6 @@ export function registerCommands(
         ch === "]" ||
         ch === "}" ||
         ch === "\t";
-      const isIdent = (ch: string) => /[A-Za-z0-9_]/.test(ch);
 
       await ed.edit((eb) => {
         for (const sel of ed.selections) {
@@ -110,7 +176,7 @@ export function registerCommands(
             pos.character < lineText.length ? lineText[pos.character] : "";
           const prevCh = pos.character > 0 ? lineText[pos.character - 1] : "";
           if (isStopper(nextCh) || prevCh === " ") continue;
-          if (isIdent(nextCh)) continue;
+          if (isNameChar(nextCh)) continue;
 
           eb.insert(pos, " ");
         }
@@ -155,6 +221,5 @@ export function registerCommands(
       }
     }),
   );
-  context.subscriptions.push(...cmds);
   return cmds;
 }
