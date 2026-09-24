@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 
+/** Diagnostic from source "cicode"; `code` is the compiler's code when it has one (E2022, W1004, ...). */
 export function diag(
   range: vscode.Range,
   message: string,
