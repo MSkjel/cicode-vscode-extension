@@ -2,36 +2,40 @@ import * as vscode from "vscode";
 import type { Rule } from "../rule";
 import type { CheckContext } from "../context";
 import { hint, info } from "../diag";
-import { inSpan, TYPE_RE, isCommentLine } from "../../../shared/textUtils";
+import { inSpan, isCommentLine } from "../../../shared/textUtils";
 import {
-  getFunctionBodyText,
-  trackBlockDepth,
-} from "../../../shared/parseHelpers";
-import {
-  BLOCK_OPENERS,
   BLOCK_START_KEYWORDS,
   STRUCTURAL_KEYWORDS,
   STATEMENT_BOUNDARY_KEYWORDS,
-  TOKEN_RE,
   DECLARATION_LINE_RE,
+  CICODE_TYPES,
+  NAME_PATTERN,
 } from "../../../shared/constants";
+import {
+  functionBody,
+  isIdentifier,
+  isToken,
+  tokensOf,
+  walkStatements,
+} from "./statements";
 
-const KEYWORD_CASE_RE = new RegExp(
-  `\\b(${[
-    ...BLOCK_START_KEYWORDS,
-    ...STRUCTURAL_KEYWORDS,
-    ...STATEMENT_BOUNDARY_KEYWORDS,
-    "RETURN",
-    "GLOBAL",
-    "MODULE",
-  ]
-    .map((k) => k.toLowerCase())
-    .join("|")})\\b`,
+// Keywords the keyword-case rule looks at.
+const CASE_KEYWORDS = new Set([
+  ...BLOCK_START_KEYWORDS,
+  ...STRUCTURAL_KEYWORDS,
+  ...STATEMENT_BOUNDARY_KEYWORDS,
+  "RETURN",
+  "GLOBAL",
+  "MODULE",
+]);
+
+// A line holding only `[GLOBAL|MODULE] type name {, name}`.
+const BARE_DECLARATION_RE = new RegExp(
+  `^\\s*(?:(?:GLOBAL|MODULE)\\s+)?(${NAME_PATTERN})\\s+${NAME_PATTERN}(?:\\s*,\\s*${NAME_PATTERN})*\\s*$`,
+  "i",
 );
-const NUM_RE = /\b(\d+(?:\.\d+)?)\b/g;
-const ARRAY_INDEX_RE = /\[\s*\d+\s*\]/;
 
-/** Warn when lines exceed the configured maximum length. */
+/** Hint at lines longer than the configured maximum. */
 export const lineLengthRule: Rule = {
   id: "lineLength",
 
@@ -56,7 +60,7 @@ export const lineLengthRule: Rule = {
   },
 };
 
-/** Warn when a line mixes tabs and spaces in its leading whitespace. */
+/** Hint at leading whitespace that mixes tabs and spaces. */
 export const mixedIndentRule: Rule = {
   id: "mixedIndent",
 
@@ -83,172 +87,132 @@ export const mixedIndentRule: Rule = {
   },
 };
 
-/** Suggest trailing semicolons on variable declaration lines. */
+/** Suggest a semicolon after a declaration (style: the compiler never needs one). */
 export const missingSemicolonRule: Rule = {
   id: "missingSemicolon",
 
-  check({ doc, cfg }: CheckContext): vscode.Diagnostic[] {
+  check({ doc, cfg, ignore }: CheckContext): vscode.Diagnostic[] {
     if (!cfg.enabled || !cfg.warnMissingSemicolons) return [];
 
     const diags: vscode.Diagnostic[] = [];
     for (let i = 0; i < doc.lineCount; i++) {
       const L = doc.lineAt(i);
-      const s = L.text;
-      if (isCommentLine(s)) continue;
-
-      if (/^\s*((?:GLOBAL|MODULE)\s+)?(\w+)\s+\w+(\s*,\s*\w+)*\s*$/i.test(s)) {
-        const typeWord =
-          /^\s*(?:(?:GLOBAL|MODULE)\s+)?(\w+)/i.exec(s)?.[1] || "";
-        if (TYPE_RE.test(typeWord) && !/;\s*(\/\/|!|$)/.test(s)) {
-          diags.push(
-            info(
-              new vscode.Range(L.range.start, L.range.end),
-              "Consider ending declarations with a semicolon.",
-            ),
-          );
-        }
-      }
+      const m = BARE_DECLARATION_RE.exec(L.text);
+      // Only the six types declare anything (`LONG x` is no declaration).
+      if (!m || !CICODE_TYPES.has(m[1].toUpperCase())) continue;
+      // Skip lines inside block comments/strings/function headers (e.g.
+      // commented-out declarations or the last parameter line of a
+      // multi-line header).
+      const at = doc.offsetAt(
+        new vscode.Position(i, L.firstNonWhitespaceCharacterIndex),
+      );
+      if (inSpan(at, ignore)) continue;
+      diags.push(
+        info(
+          new vscode.Range(L.range.start, L.range.end),
+          "Consider ending declarations with a semicolon.",
+        ),
+      );
     }
     return diags;
   },
 };
 
-/** Suggest using UPPERCASE for Cicode keywords. */
+/** Suggest UPPERCASE keywords (style: keywords are case-insensitive). */
 export const keywordCaseRule: Rule = {
   id: "keywordCase",
 
-  check({ doc, cfg, ignoreNoHeaders }: CheckContext): vscode.Diagnostic[] {
+  check({ doc, text, cfg }: CheckContext): vscode.Diagnostic[] {
     if (!cfg.enabled || !cfg.warnKeywordCase) return [];
 
     const diags: vscode.Diagnostic[] = [];
-    for (let i = 0; i < doc.lineCount; i++) {
-      const s = doc.lineAt(i).text;
-      const m = s.match(KEYWORD_CASE_RE);
-      if (m && m[0] !== m[0].toUpperCase()) {
-        const idx = m.index || 0;
-        if (inSpan(doc.offsetAt(new vscode.Position(i, idx)), ignoreNoHeaders))
-          continue;
-        diags.push(
-          hint(
-            new vscode.Range(
-              new vscode.Position(i, idx),
-              new vscode.Position(i, idx + m[0].length),
-            ),
-            `Prefer UPPERCASE keyword '${m[0].toUpperCase()}'.`,
-          ),
-        );
-      }
+    for (const t of tokensOf(text)) {
+      if (t.kind !== "w" || !CASE_KEYWORDS.has(t.text)) continue;
+      if (text.slice(t.start, t.end) === t.text) continue;
+      diags.push(
+        hint(
+          new vscode.Range(doc.positionAt(t.start), doc.positionAt(t.end)),
+          `Prefer UPPERCASE keyword '${t.text}'.`,
+        ),
+      );
     }
     return diags;
   },
 };
 
-/** Warn on magic numbers (hardcoded literals other than 0, 1, -1). */
+/** Hint at magic numbers (literals other than 0 and 1) in code, except in
+ *  declarations, array indexes and format widths. */
 export const magicNumbersRule: Rule = {
   id: "magicNumbers",
 
-  check({ doc, ignoreNoHeaders, cfg }: CheckContext): vscode.Diagnostic[] {
+  check({ doc, text, cfg }: CheckContext): vscode.Diagnostic[] {
     if (!cfg.enabled || !cfg.warnMagicNumbers) return [];
 
     const diags: vscode.Diagnostic[] = [];
-    for (let i = 0; i < doc.lineCount; i++) {
-      const L = doc.lineAt(i);
-      const s = L.text;
-      if (isCommentLine(s)) continue;
-
-      const isDeclarationLine = DECLARATION_LINE_RE.test(s);
-      if (isDeclarationLine) continue;
-
-      NUM_RE.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = NUM_RE.exec(s))) {
-        const num = parseFloat(m[1]);
-        const absPos = doc.offsetAt(new vscode.Position(i, m.index));
-        const isArrayIndex = ARRAY_INDEX_RE.test(
-          s.slice(Math.max(0, m.index - 2), m.index + m[1].length + 2),
-        );
-
-        if (
-          num !== 0 &&
-          num !== 1 &&
-          num !== -1 &&
-          !isArrayIndex &&
-          !inSpan(absPos, ignoreNoHeaders)
-        ) {
-          diags.push(
-            hint(
-              new vscode.Range(
-                new vscode.Position(i, m.index),
-                new vscode.Position(i, m.index + m[1].length),
-              ),
-              `Consider using a named constant instead of magic number '${m[1]}'.`,
-            ),
-          );
-        }
+    const T = tokensOf(text);
+    let line = -1;
+    let declarationLine = false;
+    for (let k = 0; k < T.length; k++) {
+      const t = T[k];
+      if (t.kind !== "n") continue;
+      const pos = doc.positionAt(t.start);
+      if (pos.line !== line) {
+        line = pos.line;
+        declarationLine = DECLARATION_LINE_RE.test(doc.lineAt(line).text);
       }
+      if (declarationLine || isToken(T[k - 1], ":")) continue;
+      if (isToken(T[k - 1], "[") && isToken(T[k + 1], "]")) continue;
+      const value = Number(t.text);
+      if (Number.isNaN(value) || value === 0 || value === 1) continue;
+      diags.push(
+        hint(
+          new vscode.Range(pos, doc.positionAt(t.end)),
+          `Consider using a named constant instead of magic number '${t.text}'.`,
+        ),
+      );
     }
     return diags;
   },
 };
 
 /**
- * Warns when function calls are nested deeper than cfg.maxCallNestingDepth.
- * Uses a stack to distinguish function-call parens from grouping parens.
- * Disabled when maxCallNestingDepth is 0.
+ * Hints at function calls nested deeper than cfg.maxCallNestingDepth: a
+ * '(' after a name opens a call, any other '(' groups. Disabled when
+ * maxCallNestingDepth is 0.
  */
 export const callNestingRule: Rule = {
   id: "callNesting",
 
-  check({
-    text,
-    ignoreNoHeaders,
-    doc,
-    cfg,
-  }: CheckContext): vscode.Diagnostic[] {
+  check({ text, doc, cfg }: CheckContext): vscode.Diagnostic[] {
     if (!cfg.enabled || !cfg.maxCallNestingDepth) return [];
 
     const diags: vscode.Diagnostic[] = [];
+    const T = tokensOf(text);
     // Stack entries: true = function-call paren, false = grouping paren
     const stack: boolean[] = [];
     let callDepth = 0;
-    let lastFiredDepth = 0; // avoid re-firing on every char inside the deep call
+    let lastFiredDepth = 0; // fire once per excursion past the limit
 
-    for (let i = 0; i < text.length; i++) {
-      if (inSpan(i, ignoreNoHeaders)) continue;
-
-      const ch = text[i];
-
-      if (ch === "(") {
-        let j = i - 1;
-        while (j >= 0 && (text[j] === " " || text[j] === "\t")) j--;
-        const isCallParen = j >= 0 && /[A-Za-z0-9_]/.test(text[j]);
-
-        stack.push(isCallParen);
-        if (isCallParen) {
-          callDepth++;
-          if (
-            callDepth > cfg.maxCallNestingDepth &&
-            callDepth > lastFiredDepth
-          ) {
-            lastFiredDepth = callDepth;
-            const pos = doc.positionAt(i);
-            diags.push(
-              hint(
-                new vscode.Range(pos, pos.translate(0, 1)),
-                `Function call nested ${callDepth} levels deep (max ${cfg.maxCallNestingDepth}).`,
-              ),
-            );
-          }
+    for (let k = 0; k < T.length; k++) {
+      const t = T[k];
+      if (isToken(t, "(")) {
+        const isCall = k > 0 && isIdentifier(T[k - 1]);
+        stack.push(isCall);
+        if (!isCall) continue;
+        callDepth++;
+        if (callDepth > cfg.maxCallNestingDepth && callDepth > lastFiredDepth) {
+          lastFiredDepth = callDepth;
+          diags.push(
+            hint(
+              new vscode.Range(doc.positionAt(t.start), doc.positionAt(t.end)),
+              `Function call nested ${callDepth} levels deep (max ${cfg.maxCallNestingDepth}).`,
+            ),
+          );
         }
-      } else if (ch === ")") {
-        if (stack.length > 0) {
-          const wasCall = stack.pop()!;
-          if (wasCall) {
-            callDepth--;
-            if (callDepth <= cfg.maxCallNestingDepth) {
-              lastFiredDepth = 0; // reset so we can fire again if depth spikes again
-            }
-          }
+      } else if (isToken(t, ")") && stack.length > 0) {
+        if (stack.pop()) {
+          callDepth--;
+          if (callDepth <= cfg.maxCallNestingDepth) lastFiredDepth = 0;
         }
       }
     }
@@ -258,53 +222,35 @@ export const callNestingRule: Rule = {
 };
 
 /**
- * Warns when control flow blocks are nested deeper than
+ * Hints at IF, WHILE, FOR and SELECT blocks nested deeper than
  * cfg.maxBlockNestingDepth inside a function body. Disabled when 0.
  */
 export const blockNestingRule: Rule = {
   id: "blockNesting",
 
-  check({
-    text,
-    ignoreNoHeaders,
-    indexer,
-    doc,
-    cfg,
-  }: CheckContext): vscode.Diagnostic[] {
+  check({ text, indexer, doc, cfg }: CheckContext): vscode.Diagnostic[] {
     if (!cfg.enabled || !cfg.maxBlockNestingDepth) return [];
 
     const diags: vscode.Diagnostic[] = [];
 
     for (const f of indexer.getFunctionRanges(doc.uri.fsPath)) {
-      const { body, bodyStartAbs } = getFunctionBodyText(f, text, doc);
-      const blockState = { depth: 0, endLine: -1 };
-
-      TOKEN_RE.lastIndex = 0;
-      let m: RegExpExecArray | null;
-
-      while ((m = TOKEN_RE.exec(body))) {
-        const absPos = bodyStartAbs + m.index;
-        if (inSpan(absPos, ignoreNoHeaders)) continue;
-
-        const word = m[1].toUpperCase();
-
-        if (trackBlockDepth(word, absPos, doc, blockState) === "continue")
-          continue;
-
-        if (
-          word !== "END" &&
-          BLOCK_OPENERS.has(word) &&
-          blockState.depth > cfg.maxBlockNestingDepth
-        ) {
-          const pos = doc.positionAt(absPos);
-          diags.push(
-            hint(
-              new vscode.Range(pos, pos.translate(0, m[1].length)),
-              `Block nested ${blockState.depth} levels deep (max ${cfg.maxBlockNestingDepth}).`,
-            ),
-          );
-        }
-      }
+      const { tokens: T, stmts } = functionBody(text, f);
+      walkStatements(stmts, (s) => {
+        const block =
+          s.kind === "if" ||
+          s.kind === "while" ||
+          s.kind === "select" ||
+          (s.kind === "for" && (s.forTo ?? -1) >= 0);
+        const level = s.depth + 1;
+        if (!block || level <= cfg.maxBlockNestingDepth) return;
+        const t = T[s.start];
+        diags.push(
+          hint(
+            new vscode.Range(doc.positionAt(t.start), doc.positionAt(t.end)),
+            `Block nested ${level} levels deep (max ${cfg.maxBlockNestingDepth}).`,
+          ),
+        );
+      });
     }
 
     return diags;
