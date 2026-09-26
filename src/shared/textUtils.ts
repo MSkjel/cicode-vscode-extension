@@ -463,68 +463,12 @@ export function leftWordRangeAt(
 ): vscode.Range | undefined {
   const line = doc.lineAt(pos.line).text;
   let s = pos.character;
-  const isWord = (ch: string) => /[A-Za-z0-9_]/.test(ch);
-  const isWordStart = (ch: string) => /[A-Za-z_]/.test(ch);
-  if (pos.character > 0 && isWord(line[pos.character - 1])) {
-    while (s > 0 && isWord(line[s - 1])) s--;
-    if (!isWordStart(line[s])) return undefined;
+  if (pos.character > 0 && isNameChar(line[pos.character - 1])) {
+    while (s > 0 && isNameChar(line[s - 1])) s--;
+    if (!isNameStart(line[s])) return undefined;
     return new vscode.Range(pos.line, s, pos.line, pos.character);
   }
   return undefined;
-}
-
-export function wordRangeAt(
-  doc: vscode.TextDocument,
-  pos: vscode.Position,
-): vscode.Range | undefined {
-  const line = doc.lineAt(pos.line).text;
-  let s = pos.character,
-    e = pos.character;
-  const isWord = (ch: string) => /[A-Za-z_]/.test(ch);
-  while (s > 0 && isWord(line[s - 1])) s--;
-  while (e < line.length && /[A-Za-z0-9_]/.test(line[e])) e++;
-  if (s === e) return undefined;
-  return new vscode.Range(pos.line, s, pos.line, e);
-}
-
-export function argLooksNamed(argText: string): boolean {
-  return /^\s*[A-Za-z_]\w*\s*:\s*/.test(argText);
-}
-
-export interface DeclName {
-  name: string;
-  arraySize: string | null;
-}
-
-export function splitDeclNames(namesPart: string): DeclName[] {
-  // Split only at top-level commas (not inside parentheses/brackets) so that
-  // initializers like "= ArrayGetInt(a, b, c)" are treated as a single unit
-  // rather than being split into phantom variable names.
-  const parts: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < namesPart.length; i++) {
-    const c = namesPart[i];
-    if (c === "(" || c === "[") depth++;
-    else if (c === ")" || c === "]") depth = Math.max(0, depth - 1);
-    else if (c === "," && depth === 0) {
-      parts.push(namesPart.slice(start, i));
-      start = i + 1;
-    }
-  }
-  parts.push(namesPart.slice(start));
-
-  return parts
-    .map((s) => s.trim())
-    .map((s) => stripLineComment(s).trim())
-    .map((s) => s.replace(/\s*=\s*.+$/, "").trim())
-    .filter(Boolean)
-    .map((s) => {
-      const m = s.match(/^(\w+)\s*\[(.+)\]$/);
-      if (m) return { name: m[1], arraySize: m[2] };
-      return { name: s, arraySize: null };
-    })
-    .filter(({ name }) => /^[A-Za-z_]\w*$/.test(name));
 }
 
 function normalizeDocText(s: string): string {

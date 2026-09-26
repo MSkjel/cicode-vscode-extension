@@ -20,20 +20,21 @@ export function makeSymbols(indexer: Indexer, workspace = false) {
 
     function buildCache(): CachedSym[] {
       const result: CachedSym[] = [];
-      for (const [, f] of indexer.getAllFunctions()) {
-        result.push({
-          lower: f.name.toLowerCase(),
-          sym: new vscode.SymbolInformation(
-            f.name,
-            vscode.SymbolKind.Function,
-            "",
-            f.location ??
-              new vscode.Location(
-                vscode.Uri.file(""),
-                new vscode.Position(0, 0),
-              ),
-          ),
-        });
+      for (const [key] of indexer.getAllFunctions()) {
+        // Every .ci definition: PRIVATE functions of the same name may exist
+        // in several files. Built-ins and labels have no source location.
+        for (const f of indexer.getFunctionDefinitions(key)) {
+          if (!f.location) continue;
+          result.push({
+            lower: f.name.toLowerCase(),
+            sym: new vscode.SymbolInformation(
+              f.name,
+              vscode.SymbolKind.Function,
+              f.isPrivate ? "PRIVATE" : "",
+              f.location,
+            ),
+          });
+        }
       }
       for (const v of indexer.getAllVariableEntries()) {
         if (!v.location) continue;
