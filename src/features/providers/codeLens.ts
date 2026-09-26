@@ -22,21 +22,49 @@ export function makeCodeLens(
       if (!cfg().get<boolean>("cicode.codeLens.enable", true)) return [];
 
       const lenses: vscode.CodeLens[] = [];
-      const funcRanges = indexer.getFunctionRanges(document.uri.fsPath);
+      const file = document.uri.fsPath;
+      const funcRanges = indexer.getFunctionRanges(file);
 
       for (const f of funcRanges) {
-        const key = f.name.toLowerCase();
-        const refCount = refCache.getReferenceCount(key);
+        // Above the first header line: scope and return type may sit on
+        // lines above FUNCTION, and the name on the line below it.
+        let anchor = document.positionAt(f.itemStart);
+        if (anchor.isAfter(f.headerPos)) anchor = f.headerPos;
+        anchor = new vscode.Position(anchor.line, 0);
+        const range = new vscode.Range(anchor, anchor);
 
-        // Anchor to the function name line
-        const nameLine = f.location.range.start.line;
-        const anchor = new vscode.Position(nameLine, 0);
-        const lens = new vscode.CodeLens(new vscode.Range(anchor, anchor), {
-          title: refCount === 1 ? "1 reference" : `${refCount} references`,
-          command: "editor.action.findReferences",
-          arguments: [document.uri, f.location.range.start],
-        });
-        lenses.push(lens);
+        // Labels are substituted before names are looked up: every call
+        // of a function named like a label expands the label instead.
+        if (indexer.isKnownLabel(f.name)) {
+          lenses.push(
+            new vscode.CodeLens(range, {
+              title: `label ${f.name} replaces every call`,
+              command: "",
+            }),
+          );
+          continue;
+        }
+
+        // Calls that reach this definition: a PRIVATE function is called
+        // from its own file only, and a file with its own PRIVATE function
+        // of the name calls that one.
+        const def = indexer
+          .getFunctionDefinitions(f.name)
+          .find((d) => d.file === file);
+        const refs = refCache.getReferences(f.name)?.refs;
+        const refCount =
+          def && refs
+            ? refs.filter((r) => indexer.getFunctionFor(f.name, r.file) === def)
+                .length
+            : refCache.getReferenceCount(f.name);
+
+        lenses.push(
+          new vscode.CodeLens(range, {
+            title: refCount === 1 ? "1 reference" : `${refCount} references`,
+            command: "editor.action.findReferences",
+            arguments: [document.uri, f.location.range.start],
+          }),
+        );
       }
 
       return lenses;
