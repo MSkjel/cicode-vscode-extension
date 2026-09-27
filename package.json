@@ -39,6 +39,23 @@
         "path": "./syntaxes/cicode.tmLanguage.json"
       }
     ],
+    "semanticTokenTypes": [
+      {
+        "id": "builtin",
+        "superType": "function",
+        "description": "Built-in Cicode function"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "cicode",
+        "scopes": {
+          "builtin": [
+            "support.function"
+          ]
+        }
+      }
+    ],
     "commands": [
       {
         "command": "cicode.rebuildBuiltins",

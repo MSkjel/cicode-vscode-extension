@@ -39,7 +39,7 @@ export function registerProviders(
 
     const onceIndexed = indexer.onIndexed((file) => {
       if (file === undefined) {
-        // Full rebuild complete — re-register so VS Code re-requests symbols
+        // Full rebuild complete: re-register so VS Code re-requests symbols
         // for already-open documents
         docSymHolder.current.dispose();
         docSymHolder.current = vscode.languages.registerDocumentSymbolProvider(
@@ -82,7 +82,7 @@ export function registerProviders(
       vscode.languages.registerInlayHintsProvider("cicode", inlayProvider),
     );
 
-    // FIX: create semantic tokens provider ONCE and reuse its legend
+    // One semantic tokens provider, registered with its own legend
     const sem = makeSemanticTokens(indexer);
     disposables.push(sem); // Dispose cache invalidation subscription
     disposables.push(
