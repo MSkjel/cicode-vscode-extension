@@ -1,12 +1,14 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../core/indexer/indexer";
+import type { FunctionRange } from "../core/indexer/types";
 import { cleanParamName } from "../shared/textUtils";
+import { splitParamsTopLevel } from "../shared/parseHelpers";
 import { cfg } from "../config";
 
 interface DocSkeletonConfig {
   useBlockComment: boolean; // Whether block comments (/** ... */) or if single line comments (///) are used for the doc skeleton
-  useXMLDoxygenCommands: boolean; // Whether regular doxygen speceial commands (@ and /), or if doxygen XML tags are used by the doc skeleton
-  nonXMLCommandChar: string; // if the non xml doxygen should use @ or /
+  useXMLDoxygenCommands: boolean; // Whether doxygen XML tags are used by the doc skeleton, rather than doxygen special commands (@ or \)
+  nonXMLCommandChar: string; // if the non xml doxygen should use @ or \
 }
 function getDocstringFormat(): DocSkeletonConfig {
   const c = cfg();
@@ -98,8 +100,8 @@ export function buildDocSkeleton(opts: {
   paramsRaw: string;
 }): string {
   const { name, returnType } = opts;
-  const params = (opts.paramsRaw || "")
-    .split(",")
+  // Default values may hold commas (`STRING s = "a,b"`, `INT a = Max(1, 2)`).
+  const params = splitParamsTopLevel(opts.paramsRaw || "")
     .map((s) => cleanParamName(s))
     .filter(Boolean);
   let docConfig = getDocstringFormat();
@@ -170,9 +172,7 @@ export async function insertDocSkeletonAtCursor(
   const doc = editor.document;
   const pos = editor.selection.active;
 
-  const fr =
-    indexer.findEnclosingFunction(doc, pos) ||
-    nearestFunctionAtOrAbove(indexer, doc, pos);
+  const fr = functionAt(indexer, doc, pos);
   if (!fr) {
     vscode.window.showInformationMessage(
       "Cicode: No function found at cursor.",
@@ -180,9 +180,17 @@ export async function insertDocSkeletonAtCursor(
     return false;
   }
 
-  const headerLine = fr.headerPos.line;
+  // The header starts at its scope or return type, which may sit on lines
+  // above FUNCTION; the doc block goes above all of it.
+  const headerLine = doc.positionAt(fr.itemStart).line;
   const prevLineText = headerLine > 0 ? doc.lineAt(headerLine - 1).text : "";
-  if (/^\s*\/\/\//.test(prevLineText) || /^\s*\*+\//.test(prevLineText)) {
+  if (
+    fr.docText ||
+    fr.paramDocs ||
+    fr.returnsDoc ||
+    /^\s*\/\/\//.test(prevLineText) ||
+    /^\s*\*+\//.test(prevLineText)
+  ) {
     vscode.window.showInformationMessage("Cicode: Doc block already present.");
     return false;
   }
@@ -198,24 +206,19 @@ export async function insertDocSkeletonAtCursor(
   return true;
 }
 
-function nearestFunctionAtOrAbove(
+/** The function whose header or body holds the cursor, else the nearest one
+ *  starting above it. */
+function functionAt(
   indexer: Indexer,
   doc: vscode.TextDocument,
   pos: vscode.Position,
-) {
-  const file = doc.uri.fsPath;
-  const list = indexer.getFunctionRanges(file);
-  if (!list?.length) return null;
-  const caretOffset = doc.offsetAt(pos);
-  let best: (typeof list)[number] | null = null;
-  for (const f of list) {
-    const headerOffset = doc.offsetAt(f.headerPos);
-    if (
-      headerOffset <= caretOffset &&
-      (!best || headerOffset > doc.offsetAt(best.headerPos))
-    ) {
-      best = f;
-    }
+): FunctionRange | null {
+  const caret = doc.offsetAt(pos);
+  let best: FunctionRange | null = null;
+  for (const f of indexer.getFunctionRanges(doc.uri.fsPath)) {
+    if (f.itemStart > caret) continue;
+    if (caret < f.endOffset) return f;
+    if (!best || f.itemStart > best.itemStart) best = f;
   }
   return best;
 }
