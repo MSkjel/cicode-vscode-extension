@@ -14,6 +14,12 @@ import { registerCommands } from "./features/commands";
 import { makeStatusBar } from "./features/statusBar";
 import { makeSideBar } from "./features/sideBar";
 import { log, error } from "./shared/utils";
+import {
+  buildIgnoreSpans,
+  inSpan,
+  isNameChar,
+  nameKey,
+} from "./shared/textUtils";
 
 let indexer: Indexer | undefined;
 
@@ -35,7 +41,7 @@ export async function activate(context: vscode.ExtensionContext) {
     );
     if (!fs.existsSync(adapterExe)) {
       vscode.window.showWarningMessage(
-        `Cicode: debug adapter not found at ${adapterExe}. Run 'build.cmd' in the dap/ folder to build it.`,
+        `Cicode: debug adapter not found at ${adapterExe}. Run 'build-release.cmd' in the dap/ folder to build it.`,
       );
     }
     disposables.push(
@@ -73,7 +79,12 @@ export async function activate(context: vscode.ExtensionContext) {
               }
 
               const result: vscode.InlineValue[] = [];
-              const lines = document.getText().split("\n");
+              const text = document.getText();
+              const lines = text.split("\n");
+              // From the live text: the indexer's cached spans lag edits
+              const ignore = buildIgnoreSpans(text, {
+                includeFunctionHeaders: false,
+              });
 
               for (
                 let li = viewPort.start.line;
@@ -81,16 +92,28 @@ export async function activate(context: vscode.ExtensionContext) {
                 li++
               ) {
                 const line = lines[li];
+                // Names ignore the case of ASCII letters only (nameKey keeps
+                // offsets)
+                const lineKey = nameKey(line);
+                const lineStartOffset = document.offsetAt(
+                  new vscode.Position(li, 0),
+                );
                 for (const [name, value] of valueByName) {
+                  const key = nameKey(name);
                   let col = 0;
                   while (col < line.length) {
-                    const idx = line.indexOf(name, col);
+                    const idx = lineKey.indexOf(key, col);
                     if (idx < 0) break;
-                    const beforeOk = idx === 0 || !/\w/.test(line[idx - 1]);
-                    const afterOk =
-                      idx + name.length >= line.length ||
-                      !/\w/.test(line[idx + name.length]);
-                    if (beforeOk && afterOk) {
+                    // Whole names only, and not the field of a `Tag.Field`
+                    const beforeOk =
+                      idx === 0 ||
+                      (!isNameChar(line[idx - 1]) && line[idx - 1] !== ".");
+                    const afterOk = !isNameChar(line[idx + name.length]);
+                    if (
+                      beforeOk &&
+                      afterOk &&
+                      !inSpan(lineStartOffset + idx, ignore)
+                    ) {
                       result.push(
                         new vscode.InlineValueText(
                           new vscode.Range(li, idx, li, idx + name.length),
