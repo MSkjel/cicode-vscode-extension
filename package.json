@@ -209,12 +209,12 @@
         "cicode.diagnostics.warnInvalidTypes": {
           "type": "boolean",
           "default": true,
-          "description": "Warn when a variable or function is declared with a tag data type that is not valid in Cicode (e.g. LONG, DIGITAL, BYTE)."
+          "description": "Report declarations whose type is not one of the six Cicode types (INT, REAL, STRING, OBJECT, QUALITY, TIMESTAMP), e.g. the tag types LONG, DIGITAL or BYTE. The compiler rejects such a parameter, module or global variable or return type; a local one declares nothing (the words are read as tags)."
         },
         "cicode.diagnostics.warnUndeclaredVariables": {
           "type": "boolean",
           "default": false,
-          "description": "Warn about variables that are used but never declared."
+          "description": "Warn about names that are not a declared variable, function or label. The compiler reads such a name as a variable tag (W1007 Tag not defined when the project has none); tags are not indexed, so this is off by default."
         },
         "cicode.diagnostics.ignoredUndeclaredVariables": {
           "type": "array",
@@ -244,7 +244,7 @@
         "cicode.diagnostics.warnDeclarationsInBlocks": {
           "type": "boolean",
           "default": true,
-          "description": "Warn when a variable declaration appears inside a control flow block (IF/FOR/WHILE/SELECT)."
+          "description": "Report variable declarations inside IF, WHILE, FOR or SELECT blocks, which the compiler rejects (E2041)."
         },
         "cicode.diagnostics.ignoredFunctions": {
           "type": "array",

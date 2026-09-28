@@ -171,12 +171,11 @@ export const CICODE_TYPES = new Set([
   "OBJECT",
   "QUALITY",
   "TIMESTAMP",
-  "BOOLEAN",
 ]);
 
 /**
- * Tag data types. Valid in tag definitions and built-in signatures,
- * but NOT valid in Cicode variable or function declarations.
+ * Tag data types, and VOID from built-in signatures. None of them is a
+ * Cicode type: the compiler never takes them as a declaration type.
  */
 export const TAG_ONLY_TYPES = new Set([
   "VOID",
@@ -189,23 +188,31 @@ export const TAG_ONLY_TYPES = new Set([
   "LONGBCD",
 ]);
 
-/** All recognized type names (Cicode + tag-only), for parsing/highlighting */
-export const ALL_TYPES = new Set([...CICODE_TYPES, ...TAG_ONLY_TYPES]);
+/**
+ * All recognized type names (Cicode + tag-only), for parsing.
+ * BOOLEAN is included so declarations using it are still parsed; it is not a
+ * Cicode type either, and the invalidTypes rule flags it like the tag-only types.
+ */
+export const ALL_TYPES = new Set([
+  ...CICODE_TYPES,
+  ...TAG_ONLY_TYPES,
+  "BOOLEAN",
+]);
 
 /** Pipe-separated pattern of all recognized types, for use in RegExp */
 export const CICODE_TYPES_PATTERN = [...ALL_TYPES].join("|");
 
+// Not inside a longer name or right after a digit, so `0x1F` yields no name `x1F`
+const NAME_START = `(?<![${NAME_CHARS}])`;
+
 /** Matches function call syntax: identifier followed by "(" */
-export const CALL_RE = /\b([A-Za-z_]\w*)\s*\(/g;
+export const CALL_RE = new RegExp(`${NAME_START}(${NAME_PATTERN})\\s*\\(`, "g");
 
 /** Matches any identifier token (with capture group) */
-export const TOKEN_RE = /\b([A-Za-z_]\w*)\b/g;
-
-/** Matches any identifier token (no capture group) */
-export const WORD_RE = /\b[A-Za-z_]\w*\b/g;
+export const TOKEN_RE = new RegExp(`${NAME_START}(${NAME_PATTERN})`, "g");
 
 /** Matches a variable declaration line */
 export const DECLARATION_LINE_RE = new RegExp(
-  `^\\s*(?:(?:GLOBAL|MODULE)\\s+)?(?:${[...CICODE_TYPES].join("|")})\\s+(?!FUNCTION\\b)\\w+`,
+  `^\\s*(?:(?:GLOBAL|MODULE)\\s+)?(?:${[...CICODE_TYPES].join("|")})\\s+(?!FUNCTION(?![${NAME_CHARS}]))${NAME_PATTERN}`,
   "i",
 );
