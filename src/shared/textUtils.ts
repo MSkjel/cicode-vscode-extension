@@ -15,8 +15,6 @@ const _CLEAN_PARAM_TYPE_SUFFIX = new RegExp(
   "i",
 );
 
-export const TYPE_RE = new RegExp(`^(${CICODE_TYPES_PATTERN}|UNKNOWN)$`, "i");
-
 // =============================================================================
 // Lexical rules of the compiler (also the basis of core/indexer/lexer.ts)
 // =============================================================================
