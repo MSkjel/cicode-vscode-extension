@@ -89,6 +89,8 @@ export function makeRename(
           throw new Error(
             `${word} is a local variable tag from locvar.DBF, not declared in the code.`,
           );
+        const external = notHere(word, r.v.file, doc, local(r.v));
+        if (external) throw new Error(external);
         return at.range;
       }
       const f = r?.kind === "function" ? r.fn : undefined;
@@ -96,6 +98,9 @@ export function makeRename(
         throw new Error(`${word} is a built-in function.`);
       if (f && !f.location)
         throw new Error(`${word} is not defined in the workspace.`);
+      // Nor one outside the workspace: callers there are not searched
+      const external = f && notHere(word, f.file, doc, false);
+      if (external) throw new Error(external);
       // Anything else is a tag (or a name the compiler rejects): renaming
       // every word of that spelling would break the tag's references.
       if (!f)
