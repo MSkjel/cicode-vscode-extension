@@ -1,3 +1,4 @@
+import * as fs from "fs";
 import * as vscode from "vscode";
 import type { Rule } from "../rule";
 import {
@@ -9,10 +10,21 @@ import {
   type CheckContext,
 } from "../context";
 import { diag, fileLabel } from "../diag";
-import { nameKey, upperAscii } from "../../../shared/textUtils";
+import {
+  buildIgnoreSpans,
+  buildLineIndex,
+  inSpan,
+  lineAtOffset,
+  nameKey,
+  upperAscii,
+} from "../../../shared/textUtils";
 import { getOptionalParamFlags } from "../../../shared/utils";
-import { splitParamsTopLevel } from "../../../shared/parseHelpers";
-import { CICODE_TYPES } from "../../../shared/constants";
+import {
+  findMatchingParen,
+  splitParamsTopLevel,
+} from "../../../shared/parseHelpers";
+import { CALL_RE, CICODE_TYPES } from "../../../shared/constants";
+import { argSlots } from "./functionCalls";
 import {
   isIdentifier,
   isToken,
@@ -31,6 +43,9 @@ const SCOPE_WORDS = new Set(["PUBLIC", "PRIVATE", "GLOBAL", "MODULE"]);
 const isCiFile = (file: string) => /\.ci$/i.test(file);
 
 const samePath = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+const isFunc0 = (indexer: Indexer, name: string) =>
+  indexer.getBuiltinFunction(name)?.origin === "builtin";
 
 /** A definition in `other` can clash with one in `file`: always, unless
  *  `file` is in an overlay (a folder inside another project's folder),
@@ -121,7 +136,7 @@ type Expansion =
   | { kind: "argError"; why: string }
   | { kind: "renamed"; name: string }
   | { kind: "unreachable" }
-  | { kind: "broken"; sure: boolean; code?: string };
+  | { kind: "broken"; sure: boolean; code?: string; name?: string };
 
 /** Arguments a header passes to a label: none without parentheses or with
  *  `()`, else one per top-level comma plus one (blank ones count). */
@@ -182,6 +197,18 @@ function expandHeader(
   }
   const name = expr.slice(head.start, head.end);
   if (T.length === 1) return { kind: "renamed", name };
+  const x = expandCall(T, name, supplied, bodyCode);
+  return x.kind === "broken" ? { ...x, name } : x;
+}
+
+/** expandHeader for a text `name(...)...`: the arguments must be parameters
+ *  the header supplies. */
+function expandCall(
+  T: Token[],
+  name: string,
+  supplied: string[],
+  bodyCode: (from: number) => Expansion,
+): Expansion {
   if (!isToken(T[1], "(")) return bodyCode(1);
 
   const args: Token[][] = [[]];
@@ -295,6 +322,81 @@ function misplacedScope(text: string, f: FunctionRange): Token | undefined {
   return undefined;
 }
 
+// Calls of FUNC0 names in library code by file, read from disk once per
+// version of the file (library code is not diagnosed, so the index keeps no
+// text of it): nameKey -> [line, argument count].
+const func0Calls = new Map<
+  string,
+  { mtime: number; calls: Map<string, Array<[number, number]>> }
+>();
+
+function func0CallsIn(
+  indexer: Indexer,
+  file: string,
+): Map<string, Array<[number, number]>> | undefined {
+  let mtime: number;
+  let text: string;
+  try {
+    mtime = fs.statSync(file).mtimeMs;
+    const hit = func0Calls.get(file);
+    if (hit?.mtime === mtime) return hit.calls;
+    text = fs.readFileSync(file, "latin1");
+  } catch {
+    return undefined;
+  }
+  const ignore = buildIgnoreSpans(text, { includeFunctionHeaders: true });
+  const lines = buildLineIndex(text);
+  const calls = new Map<string, Array<[number, number]>>();
+  const re = new RegExp(CALL_RE.source, "g");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const open = m.index + m[0].length - 1;
+    if (inSpan(m.index, ignore) || !isFunc0(indexer, m[1])) continue;
+    const close = findMatchingParen(text, open, ignore);
+    if (close === -1) continue;
+    const args = argSlots(text, open, close, ignore).filter((a) => a.filled);
+    const k = nameKey(m[1]);
+    if (!calls.has(k)) calls.set(k, []);
+    calls.get(k)!.push([lineAtOffset(lines, m.index), args.length]);
+  }
+  if (func0Calls.size > 200) func0Calls.clear();
+  func0Calls.set(file, { mtime, calls });
+  return calls;
+}
+
+/** A call in library code compiled with `file` that the PUBLIC override
+ *  `f` of the built-in `name` replaces, with an argument count it does not
+ *  take: the compiler fails there (E2022), where nothing is shown. */
+function brokenLibraryCall(
+  indexer: Indexer,
+  file: string,
+  name: string,
+  f: FunctionRange,
+): { where: string; args: number } | undefined {
+  const flags = getOptionalParamFlags(
+    splitParamsTopLevel(f.paramsRaw || "").filter(Boolean),
+  );
+  const max = flags.length;
+  const g = indexer.projects;
+  const own = g.projectOf(file).key;
+  for (const k of g.visible(file).keys()) {
+    if (k === own) continue;
+    for (const lib of indexer.projectSourceFiles(k)) {
+      if (!libraryCode(indexer, file, lib)) continue;
+      const over = func0CallsIn(indexer, lib)
+        ?.get(nameKey(name))
+        ?.find(([, n]) => n > max);
+      if (over && indexer.getFunctionFor(name, lib)?.file === file) {
+        return {
+          where: `${fileLabel(indexer, lib)}:${over[0] + 1}`,
+          args: over[1],
+        };
+      }
+    }
+  }
+  return undefined;
+}
+
 function nameRange(v: VariableEntry): vscode.Range {
   const p = v.location!.range.start;
   return new vscode.Range(p, p.translate(0, v.name.length));
@@ -309,7 +411,9 @@ function nameRange(v: VariableEntry): vscode.Range {
  *   also clashes with a function; variables clash within their scope
  * - a function named like a label, which the compiler expands in the header
  *   (E2057 for arguments the label doesn't take)
- * - W1006: function named like a built-in of the compiler's table
+ * - W1006: function named like a built-in of the compiler's table (the
+ *   first in compile order replaces it); E2022 where that breaks a call in
+ *   library code, which is not diagnosed itself
  * - W1003: parameter with a default before one without
  */
 export const functionDefsRule: Rule = {
@@ -401,6 +505,17 @@ export const functionDefsRule: Rule = {
                     x.code,
                   ),
           );
+          // The header still names the function it expands to.
+          if (x.kind === "broken" && x.name && isFunc0(indexer, x.name)) {
+            diags.push(
+              diag(
+                range,
+                `The label ${sig} renames this function to '${x.name}', which has the same name as a built-in function and replaces it ${isPrivate ? "in this file" : "in every file"}.`,
+                WARNING,
+                "W1006",
+              ),
+            );
+          }
           continue;
         }
         name = x.name;
@@ -418,6 +533,14 @@ export const functionDefsRule: Rule = {
             ),
           );
           continue;
+        }
+        // A constant label that is a name renames the function.
+        const T = label ? lex(label.expr).tokens : [];
+        if (T.length === 1 && isIdentifier(T[0])) {
+          labelSure = sourceInCompile(indexer, file, label!.file);
+          sig = label!.name;
+          name = label!.expr.trim();
+          renamed = true;
         }
       }
       if (renamed) {
@@ -509,7 +632,9 @@ export const functionDefsRule: Rule = {
         }
       }
 
-      if (indexer.getBuiltinFunction(name)?.origin === "builtin") {
+      // Only the first override in compile order replaces the built-in;
+      // one compiled after another in every unit is only a duplicate.
+      if (isFunc0(indexer, name) && !(clash && !clash.after && !clash.when)) {
         diags.push(
           diag(
             range,
@@ -520,9 +645,24 @@ export const functionDefsRule: Rule = {
             "W1006",
           ),
         );
+        const broken = isPrivate
+          ? undefined
+          : brokenLibraryCall(indexer, file, name, f);
+        if (broken) {
+          diags.push(
+            diag(
+              range,
+              say(
+                `replaces the built-in function also in ${broken.where}, which calls ${name} with ${broken.args} argument${broken.args === 1 ? "" : "s"} (E2022 there).`,
+              ),
+              labelSure ? ERROR : WARNING,
+              "E2022",
+            ),
+          );
+        }
       }
 
-      if (macro && diags.length === reported) {
+      if (renamed && diags.length === reported) {
         diags.push(
           diag(
             range,
