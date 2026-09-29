@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
+import type { LabelRecord } from "../../core/indexer/labelsReader";
 import type { ReferenceCache } from "../../core/referenceCache";
 import type { FunctionInfo, VariableEntry } from "../../shared/types";
 import {
@@ -12,28 +13,22 @@ import {
 import { buildDefinitionOffsets } from "../../shared/parseHelpers";
 import { NAME_CHARS, RESERVED_WORDS } from "../../shared/constants";
 import { CI_FILE_GLOB } from "../../shared/globs";
-import { escapeRegExp, formatScopeType } from "../../shared/utils";
+import { formatScopeType } from "../../shared/utils";
 import { findWorkspaceFiles } from "../../config";
 import { argumentNote, functionSignature, signatureParts } from "./completion";
-import { nameAt, resolveNameAt } from "./nameAt";
+import { nameAt, namePattern, reaches, resolveNameAt } from "./nameAt";
 
-/** Same variable: the entry a name resolves to at some position. */
+/** Same variable: the entry a name resolves to at some position. GLOBAL
+ *  variables of different projects share the scope id. */
 const sameVariable = (a: VariableEntry, b: VariableEntry) =>
   a.scopeType === b.scopeType &&
   a.scopeId === b.scopeId &&
+  a.file === b.file &&
   nameKey(a.name) === nameKey(b.name);
 
-/** RegExp source for a name as the compiler compares names: ASCII letters
- *  in either case, any other character as written (see nameKey). */
-function namePattern(name: string): string {
-  return [...name]
-    .map((c) =>
-      /[A-Za-z]/.test(c)
-        ? `[${c.toLowerCase()}${c.toUpperCase()}]`
-        : escapeRegExp(c),
-    )
-    .join("");
-}
+/** Same constant label record. */
+const sameLabel = (a: LabelRecord | undefined, b: LabelRecord) =>
+  !!a && a.file === b.file && nameKey(a.name) === nameKey(b.name);
 
 export function makeNavProviders(
   indexer: Indexer,
@@ -119,17 +114,21 @@ export function makeNavProviders(
         if (!word) return [];
 
         const resolved = resolveNameAt(indexer, document, position, word);
-        // A label replaces every use of its name: match the name anywhere.
-        if (resolved?.kind === "label") return liveScanAllFiles(word);
+        // A label replaces every use of its name: match the name anywhere
+        // in the files that see this label record.
+        if (resolved?.kind === "label") {
+          const label = resolved.label;
+          return liveScanAllFiles(word, (f) =>
+            sameLabel(indexer.getLabel(word, f), label),
+          );
+        }
 
         const funcEntry = resolved?.kind === "function" ? resolved.fn : null;
         const varEntry = resolved?.kind === "variable" ? resolved.v : null;
 
         if (funcEntry) {
-          // A PRIVATE function is called from its own file only, and a file
-          // with its own PRIVATE function of the name calls that one.
-          const sameFunction = (file: string) =>
-            indexer.getFunctionFor(word, file) === funcEntry;
+          // The files whose calls reach this definition
+          const sameFunction = reaches(indexer, word, funcEntry);
           // Not where a variable of the name is in scope and hides it
           const isFunction = (doc: vscode.TextDocument, pos: vscode.Position) =>
             resolveNameAt(indexer, doc, pos, word)?.kind === "function";
@@ -183,12 +182,26 @@ export function makeNavProviders(
           if (varEntry.scopeType === "module") {
             return liveScan(document.uri, word, undefined, sameVar);
           }
-          // global variable. Scan all files
-          return liveScanAllFiles(word, undefined, sameVar);
+          // A GLOBAL variable or locvar tag: the files that see it, but an
+          // overlay (a folder inside a project's folder) only borrows names
+          return liveScanAllFiles(
+            word,
+            (f) => {
+              const g = indexer.projects;
+              const p = g.projectOf(f);
+              return (
+                g.isVisible(f, varEntry.file) &&
+                (!p.overlayOf || p.key === g.projectOf(varEntry.file).key)
+              );
+            },
+            sameVar,
+          );
         }
 
-        // Unknown symbol. Scan all files
-        return liveScanAllFiles(word);
+        // Unknown symbol (a tag): the files compiled with this one
+        return liveScanAllFiles(word, (f) =>
+          indexer.projects.sameUnit(document.uri.fsPath, f),
+        );
 
         // ---------------------------------------------------------------
         // Helpers
