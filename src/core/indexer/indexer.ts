@@ -35,6 +35,7 @@ import { parseLocvarDbf } from "./localVarsParser";
 import { blankComments, parseCicode, type ParsedFunction } from "./parser";
 import {
   buildProjectGraph,
+  type CompileUnit,
   type GraphBuild,
   ProjectGraph,
   type ProjectInfo,
@@ -244,6 +245,10 @@ export function sameDefinition(
   );
 }
 
+const fileOf = (d: FunctionInfo) => d.file!;
+const recordFile = (r: LabelRecord) => r.file;
+const isPublic = (d: FunctionInfo) => !d.isPrivate;
+
 /** Resolved names for the files of one project, built on demand. */
 interface ScopeView {
   functions?: Map<string, FunctionInfo>;
@@ -267,13 +272,10 @@ export class Indexer {
   private readonly _ciDefs: DefsByKey<FunctionInfo> = new Map();
   private readonly _macroDefs: DefsByKey<FunctionInfo> = new Map();
   private readonly _constDefs: DefsByKey<LabelRecord> = new Map();
-  // Resolved views over the definition maps: one entry per name.
-  private readonly _ciView = new Map<string, FunctionInfo>();
-  private readonly _macroView = new Map<string, FunctionInfo>();
-  readonly labelCache = new Map<string, LabelRecord>(); // constant labels
-  private _mergedFunctions: Map<string, FunctionInfo> | null = null;
   // Per-project resolved views (visibleKey -> names), dropped on any change.
   private readonly _views = new Map<string, ScopeView>();
+  // Definitions with the help of the shipped entry they stand for.
+  private _withHelpCache = new WeakMap<FunctionInfo, FunctionInfo>();
 
   private readonly variableCache = new Map<string, VariableEntry[]>();
   private readonly functionRangesByFile = new Map<string, FunctionRange[]>();
@@ -294,8 +296,6 @@ export class Indexer {
   // onIndexed, cascading into another diagnostics run per file.
   private readonly _indexedTextHash = new Map<string, string>();
 
-  // labels.DBF tables read from outside the workspace (the Include project).
-  private _externalLabelFiles: string[] = [];
   private _graph = ProjectGraph.empty();
   // Out-of-workspace projects being indexed (external and loose ones):
   // project key -> watchers.
@@ -483,11 +483,8 @@ export class Indexer {
     this._ciDefs.clear();
     this._macroDefs.clear();
     this._constDefs.clear();
-    this._ciView.clear();
-    this._macroView.clear();
-    this.labelCache.clear();
-    this._mergedFunctions = null;
     this._views.clear();
+    this._withHelpCache = new WeakMap();
     this.variableCache.clear();
     this.functionRangesByFile.clear();
     this._functionKeysByFile.clear();
@@ -619,6 +616,7 @@ export class Indexer {
   private _setGraph(graph: ProjectGraph): void {
     this._graph = graph;
     this._views.clear();
+    this._withHelpCache = new WeakMap();
     this._watchMasters();
   }
 
@@ -883,7 +881,6 @@ export class Indexer {
         if (!key) continue;
         addDef(this._constDefs, key, filePath, rec);
         this._addToReverseIndex(this._labelKeysByFile, filePath, key);
-        this._refreshLabelView(key);
         continue;
       }
       // Function-like macro: NAME(a, b=default)
@@ -906,7 +903,6 @@ export class Indexer {
         ...argBounds(params.map((p) => p.includes("="))),
       });
       this._addToReverseIndex(this._functionKeysByFile, filePath, key);
-      this._refreshMacroView(key);
     }
     this._views.clear();
   }
@@ -1054,6 +1050,15 @@ export class Indexer {
       .sort((a, b) => (upper(a) < upper(b) ? -1 : upper(a) > upper(b) ? 1 : 0));
   }
 
+  /** A project folder with an indexed .ci file or labels.DBF. */
+  private _hasDefinitions(key: string): boolean {
+    for (const f of this._filesByFolder.get(key) ?? []) {
+      const kind = sourceKind(f);
+      if (kind === "ci" || kind === "labels") return true;
+    }
+    return false;
+  }
+
   /** Purge all cache entries owned by a file. Definitions of the same names
    *  in other files take over automatically. */
   private _purgeFile(file: string, fireEvent = true): void {
@@ -1065,8 +1070,6 @@ export class Indexer {
       for (const key of funcKeys) {
         removeDef(this._ciDefs, key, file);
         removeDef(this._macroDefs, key, file);
-        this._refreshCiView(key);
-        this._refreshMacroView(key);
       }
       this._functionKeysByFile.delete(file);
     }
@@ -1086,71 +1089,19 @@ export class Indexer {
 
     const labelKeys = this._labelKeysByFile.get(file);
     if (labelKeys) {
-      for (const key of labelKeys) {
-        removeDef(this._constDefs, key, file);
-        this._refreshLabelView(key);
-      }
+      for (const key of labelKeys) removeDef(this._constDefs, key, file);
       this._labelKeysByFile.delete(file);
     }
 
     this.functionRangesByFile.delete(file);
     this._ignoreSpansByFile.delete(file);
+    this._views.clear();
     if (fireEvent) {
       // The file is gone: a pending reindex would resurrect it from a stale
       // TextDocument.
       this._debouncedIndex.cancel(file);
       this._onIndexed.fire(file);
     }
-  }
-
-  private _refreshCiView(key: string): void {
-    // A PUBLIC definition wins over PRIVATE ones, which only their own file
-    // can call.
-    let pick: FunctionInfo | undefined;
-    for (const info of this._ciDefs.get(key)?.values() ?? []) {
-      if (!info.isPrivate) {
-        pick = info;
-        break;
-      }
-      pick ??= info;
-    }
-    if (pick) this._ciView.set(key, pick);
-    else this._ciView.delete(key);
-    this._mergedFunctions = null;
-  }
-
-  private _refreshMacroView(key: string): void {
-    const defs = this._macroDefs.get(key);
-    const macro = defs?.values().next().value as FunctionInfo | undefined;
-    if (!macro) {
-      this._macroView.delete(key);
-    } else {
-      // A documented function that is really a label keeps its help text,
-      // but the label decides the arguments.
-      const b = this.builtinFunctions.get(key);
-      this._macroView.set(
-        key,
-        b
-          ? {
-              ...macro,
-              returnType: macro.returnType || b.returnType,
-              doc: b.doc || macro.doc,
-              returns: b.returns,
-              helpPath: b.helpPath,
-              helpId: b.helpId,
-            }
-          : macro,
-      );
-    }
-    this._mergedFunctions = null;
-  }
-
-  private _refreshLabelView(key: string): void {
-    const rec = this._constDefs.get(key)?.values().next().value as
-      | LabelRecord
-      | undefined;
-    if (rec) this.labelCache.set(key, rec);
-    else this.labelCache.delete(key);
   }
 
   private _moveFile(oldPath: string, newPath: string): void {
@@ -1306,7 +1257,6 @@ export class Indexer {
         ...argBounds(pf.params.map((p) => p.hasDefault)),
       });
       this._addToReverseIndex(this._functionKeysByFile, file, key);
-      this._refreshCiView(key);
 
       const scopeId = this.localScopeId(file, f.name);
       for (const p of pf.params) {
@@ -1426,78 +1376,296 @@ export class Indexer {
   }
 
   // ===========================================================================
+  // Scoped resolution
+  // ===========================================================================
+
+  /** The entries visible from a file, most preferred first: by the rank of
+   *  their project (the file's own first, then compile unit order), then
+   *  by file name inside a project (the compile order of its files). */
+  private _ranked<T>(
+    entries: Iterable<T>,
+    fileOf: (v: T) => string,
+    vis: ReadonlyMap<string, number>,
+    keep?: (v: T) => boolean,
+  ): T[] {
+    const hits: Array<{ v: T; rank: number; name: string }> = [];
+    for (const v of entries) {
+      if (keep && !keep(v)) continue;
+      const f = fileOf(v);
+      const rank = vis.get(this._graph.projectOf(f).key);
+      if (rank === undefined) continue;
+      hits.push({ v, rank, name: path.basename(f).toUpperCase() });
+    }
+    return hits
+      .sort(
+        (a, b) =>
+          a.rank - b.rank || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+      )
+      .map((h) => h.v);
+  }
+
+  /** The first of _ranked. */
+  private _best<T>(
+    entries: Iterable<T> | undefined,
+    fileOf: (v: T) => string,
+    vis: ReadonlyMap<string, number>,
+    keep?: (v: T) => boolean,
+  ): T | undefined {
+    let best: T | undefined;
+    let bestRank = Infinity;
+    let bestName = "";
+    for (const v of entries ?? []) {
+      if (keep && !keep(v)) continue;
+      const f = fileOf(v);
+      const rank = vis.get(this._graph.projectOf(f).key);
+      if (rank === undefined || rank > bestRank) continue;
+      const name = path.basename(f).toUpperCase();
+      if (rank < bestRank || name < bestName) {
+        best = v;
+        bestRank = rank;
+        bestName = name;
+      }
+    }
+    return best;
+  }
+
+  /** A shipped library entry stands for its project's definition only where
+   *  that project is compiled in (Include always is) but not indexed. */
+  private _shippedUsable(b: FunctionInfo, file: string): boolean {
+    if (!b.library) return true;
+    const lib = this._graph.libraryProject(file, b.library);
+    if (lib) return !this._hasDefinitions(lib.key);
+    return nameKey(b.library) === "include";
+  }
+
+  /** A definition with the help of the shipped entry of its name: any
+   *  documented name for a label, the shipped copy of the library function
+   *  for a .ci function of that library. */
+  private _withHelp(fn: FunctionInfo): FunctionInfo {
+    if (!fn.file) return fn;
+    const b = this.builtinFunctions.get(nameKey(fn.name));
+    if (!b) return fn;
+    if (
+      b.library
+        ? nameKey(b.library) !== nameKey(this._graph.projectName(fn.file))
+        : fn.origin !== "label"
+    ) {
+      return fn;
+    }
+    let m = this._withHelpCache.get(fn);
+    if (!m) {
+      m =
+        fn.origin === "label"
+          ? {
+              ...fn,
+              returnType: fn.returnType || b.returnType,
+              doc: b.doc || fn.doc,
+              returns: b.returns,
+              helpPath: b.helpPath,
+              helpId: b.helpId,
+            }
+          : {
+              ...fn,
+              doc: fn.doc || b.doc,
+              returns: fn.returns ?? b.returns,
+              paramDocs: fn.paramDocs ?? b.paramDocs,
+              helpPath: b.helpPath,
+              helpId: b.helpId,
+            };
+      this._withHelpCache.set(fn, m);
+    }
+    return m;
+  }
+
+  /** Function-like label of a name visible from `file`: from a labels.DBF,
+   *  else the shipped one of a library that is compiled in but not
+   *  indexed. */
+  private _labelMacro(
+    key: string,
+    file: string,
+    vis: ReadonlyMap<string, number>,
+  ): FunctionInfo | undefined {
+    const m = this._best(this._macroDefs.get(key)?.values(), fileOf, vis);
+    if (m) return m;
+    const b = this.builtinFunctions.get(key);
+    return b?.origin === "label" && this._shippedUsable(b, file)
+      ? b
+      : undefined;
+  }
+
+  /** A built-in, or a shipped library function standing for its project. */
+  private _builtinFor(key: string, file: string): FunctionInfo | undefined {
+    const b = this.builtinFunctions.get(key);
+    return b && b.origin !== "label" && this._shippedUsable(b, file)
+      ? b
+      : undefined;
+  }
+
+  private _view(file: string): ScopeView {
+    const key = this._graph.visibleKey(file);
+    let v = this._views.get(key);
+    if (!v) this._views.set(key, (v = {}));
+    return v;
+  }
+
+  // ===========================================================================
   // Public API
   // ===========================================================================
 
-  /** Function-like label of a name: from a labels.DBF, else the Include
-   *  project's own (shipped with the built-ins; Include is always compiled
-   *  in). */
-  private _labelMacro(key: string): FunctionInfo | undefined {
-    const b = this.builtinFunctions.get(key);
-    return this._macroView.get(key) ?? (b?.origin === "label" ? b : undefined);
-  }
-
-  /** Resolve a function name the way the compiler does, without the calling
-   *  file: a function-like label (labels are expanded before names are
-   *  looked up), a PUBLIC .ci function, a built-in, then a PRIVATE .ci
-   *  function. A constant label or a variable in scope also hides a
-   *  function; callers check getLabel and resolveVariableInScope first. */
-  getFunction(name: string): FunctionInfo | undefined {
-    const key = nameKey(name);
-    const ci = this._ciView.get(key);
-    return (
-      this._labelMacro(key) ??
-      (ci && !ci.isPrivate ? ci : undefined) ??
-      this.builtinFunctions.get(key) ??
-      ci
-    );
-  }
-
-  /** The function a call in `file` reaches: a function-like label, the
-   *  file's own function (a PRIVATE one included), a PUBLIC one, then a
-   *  built-in. PRIVATE functions of other files are invisible (E2031), also
-   *  where they share a built-in's name. */
+  /** The function a call in `file` reaches, in the compiler's order among
+   *  the projects compiled with the file: a function-like label (labels are
+   *  expanded before names are looked up), the file's own function (a
+   *  PRIVATE one included), a PUBLIC one (the file's project first, then
+   *  unit order), then a built-in. PRIVATE functions of other files are
+   *  invisible (E2031), also where they share a built-in's name. A constant
+   *  label or a variable in scope also hides a function; callers check
+   *  getLabel and resolveVariableInScope first. */
   getFunctionFor(name: string, file: string): FunctionInfo | undefined {
     const key = nameKey(name);
-    const ci = this._ciView.get(key);
-    return (
-      this._labelMacro(key) ??
+    const vis = this._graph.visible(file);
+    const fn =
+      this._labelMacro(key, file, vis) ??
       this._ciDefs.get(key)?.get(file) ??
-      (ci && !ci.isPrivate ? ci : undefined) ??
-      this.builtinFunctions.get(key)
-    );
+      this._best(this._ciDefs.get(key)?.values(), fileOf, vis, isPublic) ??
+      this._builtinFor(key, file);
+    return fn && this._withHelp(fn);
   }
 
-  /** Every .ci definition of a name, one per defining file. */
-  getFunctionDefinitions(name: string): FunctionInfo[] {
-    return [...(this._ciDefs.get(nameKey(name))?.values() ?? [])];
+  /** Every definition a call in `file` may reach, getFunctionFor's first:
+   *  one per unit where the file's projects are compiled in several. */
+  getFunctionCandidatesFor(name: string, file: string): FunctionInfo[] {
+    const key = nameKey(name);
+    const vis = this._graph.visible(file);
+    const out: FunctionInfo[] = this._ranked(
+      this._macroDefs.get(key)?.values() ?? [],
+      fileOf,
+      vis,
+    );
+    const b = this.builtinFunctions.get(key);
+    const shipped = !!b && this._shippedUsable(b, file);
+    if (shipped && b!.origin === "label") out.push(b!);
+    const own = this._ciDefs.get(key)?.get(file);
+    if (own) out.push(own);
+    out.push(
+      ...this._ranked(
+        this._ciDefs.get(key)?.values() ?? [],
+        fileOf,
+        vis,
+        (d) => isPublic(d) && d !== own,
+      ),
+    );
+    if (shipped && b!.origin !== "label") out.push(b!);
+    return out.map((f) => this._withHelp(f));
+  }
+
+  /** Per compile unit of `file`, the definition a call there reaches when
+   *  that unit is compiled (undefined where it reaches none): the first of
+   *  getFunctionCandidatesFor in the unit. A project included by several
+   *  roots may reach a different one in each. */
+  getFunctionsByUnit(
+    name: string,
+    file: string,
+  ): Array<{ unit: CompileUnit; fn?: FunctionInfo }> {
+    const units = this._graph.unitsOf(file);
+    if (units.length < 2) {
+      return units.map((unit) => ({
+        unit,
+        fn: this.getFunctionFor(name, file),
+      }));
+    }
+    const all = this.getFunctionCandidatesFor(name, file);
+    const named = (u: CompileUnit, lib: string) =>
+      nameKey(lib) === "include" ||
+      u.projects.some(
+        (k) => nameKey(this._graph.project(k)?.name ?? "") === nameKey(lib),
+      );
+    return units.map((unit) => ({
+      unit,
+      fn: all.find((c) =>
+        c.file
+          ? c.file === file ||
+            unit.projects.includes(this._graph.projectOf(c.file).key)
+          : !c.library || named(unit, c.library),
+      ),
+    }));
+  }
+
+  /** The .ci definitions of a name, one per defining file; with `file`,
+   *  only those of projects compiled with it, most preferred first. */
+  getFunctionDefinitions(name: string, file?: string): FunctionInfo[] {
+    const defs = this._ciDefs.get(nameKey(name));
+    if (!defs) return [];
+    if (file === undefined) return [...defs.values()];
+    return this._ranked(defs.values(), fileOf, this._graph.visible(file));
   }
 
   getBuiltinFunction(name: string): FunctionInfo | undefined {
     return this.builtinFunctions.get(nameKey(name));
   }
 
-  hasFunction(name: string) {
-    return this.getFunction(name) !== undefined;
+  /** Keys (nameKey) of every function known anywhere: built-ins, .ci
+   *  functions and label macros of every indexed project. */
+  getFunctionNames(): Set<string> {
+    return new Set([
+      ...this.builtinFunctions.keys(),
+      ...this._ciDefs.keys(),
+      ...this._macroDefs.keys(),
+    ]);
   }
 
-  /** Every function name (keyed by nameKey), resolved like getFunction. */
-  getAllFunctions(): ReadonlyMap<string, FunctionInfo> {
-    if (!this._mergedFunctions) {
-      const merged = new Map(this.builtinFunctions);
-      for (const [k, v] of this._ciView) {
-        const b = merged.get(k);
-        if (b?.origin === "label" || (v.isPrivate && b)) continue;
-        merged.set(k, v);
+  /** Every function name visible from `file` (keyed by nameKey), resolved
+   *  like getFunctionFor without the file's own PRIVATE functions; a
+   *  PRIVATE function of the file's project stands in only where nothing
+   *  else has its name. Shared by the files of one project. */
+  getAllFunctions(file: string): ReadonlyMap<string, FunctionInfo> {
+    const view = this._view(file);
+    if (!view.functions) {
+      const vis = this._graph.visible(file);
+      const ownKey = this._graph.visibleKey(file);
+      const own = (d: FunctionInfo) =>
+        !!d.isPrivate && this._graph.projectOf(d.file!).key === ownKey;
+      const out = new Map<string, FunctionInfo>();
+      for (const key of this.getFunctionNames()) {
+        const fn =
+          this._labelMacro(key, file, vis) ??
+          this._best(this._ciDefs.get(key)?.values(), fileOf, vis, isPublic) ??
+          this._builtinFor(key, file) ??
+          this._best(this._ciDefs.get(key)?.values(), fileOf, vis, own);
+        if (fn) out.set(key, this._withHelp(fn));
       }
-      for (const [k, v] of this._macroView) merged.set(k, v);
-      this._mergedFunctions = merged;
+      view.functions = out;
     }
-    return this._mergedFunctions;
+    return view.functions;
   }
 
-  getVariables(name: string) {
-    return this.variableCache.get(nameKey(name)) || [];
+  /** Every variable entry of a name; with `file`, only those it can see:
+   *  GLOBAL variables and locvar tags of projects compiled with it, and its
+   *  own module and local entries. */
+  getVariables(name: string, file?: string): VariableEntry[] {
+    const all = this.variableCache.get(nameKey(name)) ?? [];
+    if (file === undefined) return all;
+    const vis = this._graph.visible(file);
+    return all.filter((v) =>
+      v.scopeType === "global"
+        ? vis.has(this._graph.projectOf(v.file).key)
+        : v.file === file,
+    );
+  }
+
+  /** GLOBAL variables and locvar tags visible from `file` (most preferred
+   *  first per name), then the file's own module and local entries. */
+  getVisibleVariables(file: string): VariableEntry[] {
+    const view = this._view(file);
+    const globals = (view.globals ??= this._ranked(
+      this.getAllVariableEntries(),
+      (v) => v.file,
+      this._graph.visible(file),
+      (v) => v.scopeType === "global",
+    ));
+    return [
+      ...globals,
+      ...this.getVariablesInFile(file).filter((v) => v.scopeType !== "global"),
+    ];
   }
 
   getAllVariableEntries(): ReadonlyArray<VariableEntry> {
@@ -1620,26 +1788,45 @@ export class Indexer {
     );
   }
 
-  /** Is `name` a label (constant or function-like)? The compiler replaces
-   *  such a name everywhere outside strings, declarations included. */
-  isKnownLabel(name: string): boolean {
-    const key = nameKey(name);
-    return this.labelCache.has(key) || this._labelMacro(key) !== undefined;
+  /** Is `name` a label (constant or function-like) in `file`'s compile?
+   *  The compiler replaces such a name everywhere outside strings,
+   *  declarations included. */
+  isKnownLabel(name: string, file: string): boolean {
+    // Asked per word on the diagnostics hot path: one set per project.
+    const view = this._view(file);
+    if (!view.labelKeys) {
+      const vis = this._graph.visible(file);
+      const keys = new Set(this.getAllLabels(file).keys());
+      for (const [key, defs] of this._macroDefs) {
+        if (this._best(defs.values(), fileOf, vis)) keys.add(key);
+      }
+      for (const [key, b] of this.builtinFunctions) {
+        if (b.origin === "label" && this._shippedUsable(b, file)) keys.add(key);
+      }
+      view.labelKeys = keys;
+    }
+    return view.labelKeys.has(nameKey(name));
   }
 
-  /** Constant label record. */
-  getLabel(name: string): LabelRecord | undefined {
-    return this.labelCache.get(nameKey(name));
+  /** Constant label visible from `file`: its own project's first, then
+   *  unit order. */
+  getLabel(name: string, file: string): LabelRecord | undefined {
+    return this.getAllLabels(file).get(nameKey(name));
   }
 
-  /** All constant labels. */
-  getAllLabels(): Map<string, LabelRecord> {
-    return this.labelCache;
-  }
-
-  /** labels.DBF tables read from outside the workspace (the Include project). */
-  getExternalLabelFiles(): readonly string[] {
-    return this._externalLabelFiles;
+  /** All constant labels visible from `file`, resolved like getLabel. */
+  getAllLabels(file: string): ReadonlyMap<string, LabelRecord> {
+    const view = this._view(file);
+    if (!view.labels) {
+      const vis = this._graph.visible(file);
+      const out = new Map<string, LabelRecord>();
+      for (const [key, defs] of this._constDefs) {
+        const rec = this._best(defs.values(), recordFile, vis);
+        if (rec) out.set(key, rec);
+      }
+      view.labels = out;
+    }
+    return view.labels;
   }
 
   /** Find the function containing a given position (includes header and body) */

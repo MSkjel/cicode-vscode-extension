@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { Indexer } from "../../core/indexer/indexer";
+import { sameDefinition, type Indexer } from "../../core/indexer/indexer";
 import type { FunctionInfo, VariableEntry } from "../../shared/types";
 import {
   buildIgnoreSpans,
@@ -365,24 +365,25 @@ function isBuiltinFunction(f: FunctionInfo): boolean {
 // Provider
 // ---------------------------------------------------------------------------
 
+type FunctionItem = { item: vscode.CompletionItem; f: FunctionInfo };
+type VarItem = { item: vscode.CompletionItem; v: VariableEntry };
+
 export function makeCompletion(
   indexer: Indexer,
 ): vscode.CompletionItemProvider {
-  // Cache completion items, rebuilt only when the indexer changes
-  let cachedFuncItems:
-    | { item: vscode.CompletionItem; f: FunctionInfo }[]
-    | null = null;
-  let cachedGlobalVarItems: vscode.CompletionItem[] | null = null;
-  let cachedLabelItems: vscode.CompletionItem[] | null = null;
-  const cachedModuleVarItems = new Map<
-    string,
-    { item: vscode.CompletionItem; v: VariableEntry }[]
-  >();
+  // Cache completion items, rebuilt only when the indexer changes. The
+  // functions, GLOBAL variables and labels a file sees are those of the
+  // projects compiled with it, shared by the files of its project
+  // (projects.visibleKey).
+  const cachedFuncItems = new Map<string, FunctionItem[]>();
+  const cachedGlobalVarItems = new Map<string, vscode.CompletionItem[]>();
+  const cachedLabelItems = new Map<string, vscode.CompletionItem[]>();
+  const cachedModuleVarItems = new Map<string, VarItem[]>();
 
   indexer.onIndexed(() => {
-    cachedFuncItems = null;
-    cachedGlobalVarItems = null;
-    cachedLabelItems = null;
+    cachedFuncItems.clear();
+    cachedGlobalVarItems.clear();
+    cachedLabelItems.clear();
     cachedModuleVarItems.clear();
   });
 
@@ -419,21 +420,21 @@ export function makeCompletion(
     return it;
   }
 
-  function getFunctionItems(): {
-    item: vscode.CompletionItem;
-    f: FunctionInfo;
-  }[] {
-    if (!cachedFuncItems) {
-      const userItems: { item: vscode.CompletionItem; f: FunctionInfo }[] = [];
-      const builtinItems: typeof userItems = [];
-      for (const [key, f] of indexer.getAllFunctions()) {
+  function getFunctionItems(file: string): FunctionItem[] {
+    const key = indexer.projects.visibleKey(file);
+    let items = cachedFuncItems.get(key);
+    if (!items) {
+      const userItems: FunctionItem[] = [];
+      const builtinItems: FunctionItem[] = [];
+      for (const [k, f] of indexer.getAllFunctions(file)) {
         if (f.obsolete === 1) continue;
-        const entry = { item: makeFunctionItem(f.name || key, f), f };
+        const entry = { item: makeFunctionItem(f.name || k, f), f };
         (isBuiltinFunction(f) ? builtinItems : userItems).push(entry);
       }
-      cachedFuncItems = [...userItems, ...builtinItems];
+      items = [...userItems, ...builtinItems];
+      cachedFuncItems.set(key, items);
     }
-    return cachedFuncItems;
+    return items;
   }
 
   function makeVarItem(v: VariableEntry): vscode.CompletionItem {
@@ -455,13 +456,16 @@ export function makeCompletion(
     return it;
   }
 
-  /** Build variable items for one scope category, deduplicated within it. */
+  /** Build variable items for one scope category, deduplicated within it
+   *  (the first entry of a name wins). */
   function buildVarItems(
+    entries: Iterable<VariableEntry>,
     pred: (v: VariableEntry) => boolean,
-  ): { item: vscode.CompletionItem; v: VariableEntry }[] {
-    const out: { item: vscode.CompletionItem; v: VariableEntry }[] = [];
+  ): VarItem[] {
+    const out: VarItem[] = [];
     const seen = new Set<string>();
-    for (const v of indexer.getVariablesByPredicate(pred)) {
+    for (const v of entries) {
+      if (!pred(v)) continue;
       const k = `${nameKey(v.name)}|${v.scopeType}|${v.scopeId}`;
       if (seen.has(k)) continue;
       seen.add(k);
@@ -504,14 +508,26 @@ export function makeCompletion(
         ctx !== "format";
 
       if (offerNames) {
-        for (const { item, f } of getFunctionItems()) {
-          // The function a call from this file reaches: its own PRIVATE one
-          // hides a PUBLIC one, and another file's PRIVATE one is invisible
-          // (E2031), leaving a built-in of the name or nothing.
-          const own = indexer.getFunctionFor(item.label as string, file);
-          if (own === f) items.push(item);
+        // The cached items are resolved for the file's project; they differ
+        // for the file's own functions and another file's PRIVATE one. A
+        // call from this file reaches its own function (a PRIVATE one hides
+        // a PUBLIC one), and another file's PRIVATE one is invisible (E2031).
+        const ownNames = new Set(
+          indexer.getFunctionRanges(file).map((r) => nameKey(r.name)),
+        );
+        for (const { item, f } of getFunctionItems(file)) {
+          const label = item.label as string;
+          if (
+            !ownNames.has(nameKey(label)) &&
+            !(f.isPrivate && f.file !== file)
+          ) {
+            items.push(item);
+            continue;
+          }
+          const own = indexer.getFunctionFor(label, file);
+          if (sameDefinition(own, f)) items.push(item);
           else if (own && own.obsolete !== 1)
-            items.push(makeFunctionItem(item.label as string, own));
+            items.push(makeFunctionItem(label, own));
         }
       }
 
@@ -541,16 +557,24 @@ export function makeCompletion(
       // keystrokes (invalidated on reindex); locals are cheap and
       // position-dependent, so they are built per request.
       if (offerNames) {
-        if (!cachedGlobalVarItems) {
-          cachedGlobalVarItems = buildVarItems(
+        const key = indexer.projects.visibleKey(file);
+        let globalItems = cachedGlobalVarItems.get(key);
+        if (!globalItems) {
+          // Most preferred first per name: the file's project, then unit
+          // order
+          globalItems = buildVarItems(
+            indexer.getVisibleVariables(file),
             (x) => x.scopeType === "global",
           ).map((e) => e.item);
+          cachedGlobalVarItems.set(key, globalItems);
         }
-        for (const it of cachedGlobalVarItems) items.push(it);
+        for (const it of globalItems) items.push(it);
 
+        const inFile = indexer.getVariablesInFile(file);
         let moduleItems = cachedModuleVarItems.get(file);
         if (!moduleItems) {
           moduleItems = buildVarItems(
+            inFile,
             (x) => x.scopeType === "module" && x.scopeId === file,
           );
           cachedModuleVarItems.set(file, moduleItems);
@@ -563,6 +587,7 @@ export function makeCompletion(
         if (current) {
           const localScopeId = indexer.localScopeId(file, current.name);
           for (const { item, v } of buildVarItems(
+            inFile,
             (x) => x.scopeType === "local" && x.scopeId === localScopeId,
           )) {
             if (declaredBy(v, position)) items.push(item);
@@ -573,9 +598,11 @@ export function makeCompletion(
       // Label constants from labels.DBF: the compiler substitutes them before
       // parsing, so one fits wherever its text does (even as a format width).
       if (ctx !== "type" && ctx !== "declaration") {
-        if (!cachedLabelItems) {
-          cachedLabelItems = [];
-          for (const [, label] of indexer.getAllLabels()) {
+        const key = indexer.projects.visibleKey(file);
+        let labelItems = cachedLabelItems.get(key);
+        if (!labelItems) {
+          labelItems = [];
+          for (const [, label] of indexer.getAllLabels(file)) {
             const it = new vscode.CompletionItem(
               label.name,
               vscode.CompletionItemKind.Constant,
@@ -585,10 +612,11 @@ export function makeCompletion(
             if (label.comment) {
               it.documentation = new vscode.MarkdownString(label.comment);
             }
-            cachedLabelItems.push(it);
+            labelItems.push(it);
           }
+          cachedLabelItems.set(key, labelItems);
         }
-        for (const it of cachedLabelItems) {
+        for (const it of labelItems) {
           if (
             ctx === "format" &&
             !FORMAT_LABEL_RE.test(String(it.detail ?? ""))

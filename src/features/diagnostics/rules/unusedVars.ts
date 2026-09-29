@@ -31,7 +31,7 @@ export const unusedVarsRule: Rule = {
       if (!CICODE_TYPES.has(v.type.replace(/\[.*/, "").trim().toUpperCase())) {
         continue;
       }
-      if (labelOf(indexer, v.name)) continue;
+      if (labelOf(indexer, v.name, file)) continue;
       let arr = localsByScope.get(v.scopeId);
       if (!arr) localsByScope.set(v.scopeId, (arr = []));
       arr.push(v);

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
 import type { ReferenceCache } from "../../core/referenceCache";
+import { reaches } from "./nameAt";
 
 export function makeCodeLens(
   indexer: Indexer,
@@ -24,6 +25,17 @@ export function makeCodeLens(
       const lenses: vscode.CodeLens[] = [];
       const file = document.uri.fsPath;
       const funcRanges = indexer.getFunctionRanges(file);
+      // Only workspace files are searched: callers in projects outside it
+      // that are compiled with this one are not counted (Include and
+      // System aside, which call few functions they do not define).
+      const g = indexer.projects;
+      const noun =
+        indexer.isExternal(file) ||
+        [...g.visible(file).keys()].some(
+          (k) => !g.isImplicit(k) && g.project(k)?.inWorkspace === false,
+        )
+          ? "workspace reference"
+          : "reference";
 
       for (const f of funcRanges) {
         // Above the first header line: scope and return type may sit on
@@ -35,7 +47,7 @@ export function makeCodeLens(
 
         // Labels are substituted before names are looked up: every call
         // of a function named like a label expands the label instead.
-        if (indexer.isKnownLabel(f.name)) {
+        if (indexer.isKnownLabel(f.name, file)) {
           lenses.push(
             new vscode.CodeLens(range, {
               title: `label ${f.name} replaces every call`,
@@ -45,22 +57,17 @@ export function makeCodeLens(
           continue;
         }
 
-        // Calls that reach this definition: a PRIVATE function is called
-        // from its own file only, and a file with its own PRIVATE function
-        // of the name calls that one.
+        // Calls that reach this definition
         const def = indexer
           .getFunctionDefinitions(f.name)
           .find((d) => d.file === file);
-        const refs = refCache.getReferences(f.name)?.refs;
-        const refCount =
-          def && refs
-            ? refs.filter((r) => indexer.getFunctionFor(f.name, r.file) === def)
-                .length
-            : refCache.getReferenceCount(f.name);
+        const refCount = def
+          ? refCache.getReferenceCount(f.name, reaches(indexer, f.name, def))
+          : 0;
 
         lenses.push(
           new vscode.CodeLens(range, {
-            title: refCount === 1 ? "1 reference" : `${refCount} references`,
+            title: `${refCount} ${noun}${refCount === 1 ? "" : "s"}`,
             command: "editor.action.findReferences",
             arguments: [document.uri, f.location.range.start],
           }),

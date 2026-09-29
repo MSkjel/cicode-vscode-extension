@@ -1,17 +1,14 @@
-import * as path from "path";
 import * as vscode from "vscode";
 import type { Rule } from "../rule";
 import {
-  compilesBefore,
-  displayPath,
+  compileOrder,
   entryInCompile,
-  inCompile,
-  inSameFolder,
   isIncludeFile,
+  projectName,
   sourceInCompile,
   type CheckContext,
 } from "../context";
-import { diag } from "../diag";
+import { diag, fileLabel } from "../diag";
 import { nameKey, upperAscii } from "../../../shared/textUtils";
 import { getOptionalParamFlags } from "../../../shared/utils";
 import { splitParamsTopLevel } from "../../../shared/parseHelpers";
@@ -33,32 +30,89 @@ const SCOPE_WORDS = new Set(["PUBLIC", "PRIVATE", "GLOBAL", "MODULE"]);
 
 const isCiFile = (file: string) => /\.ci$/i.test(file);
 
-const folderName = (file: string) =>
-  path.basename(path.dirname(file)).toLowerCase();
+const samePath = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
-/**
- * Which of two definitions of one name in different files the compiler
- * reaches second, and so reports: the one "here" in `file`, the one "there"
- * in `other`, or "unknown" for unrelated folders, where neither the order nor
- * whether both are compiled together is known.
- */
-function secondOf(file: string, other: string): "here" | "there" | "unknown" {
-  if (inSameFolder(file, other)) {
-    return compilesBefore(other, file) ? "here" : "there";
-  }
-  const here = isIncludeFile(file);
-  const there = isIncludeFile(other);
-  if (there && !here) return "here";
-  if (here && !there) return "there";
-  return "unknown";
+/** A definition in `other` can clash with one in `file`: always, unless
+ *  `file` is in an overlay (a folder inside another project's folder),
+ *  which no compile reads; its own files still clash with each other.
+ *  With `other` "", whether `file` clashes with other projects at all. */
+function compiledWith(indexer: Indexer, file: string, other: string): boolean {
+  const g = indexer.projects;
+  const p = g.projectOf(file);
+  return !p.overlayOf || (!!other && g.projectOf(other).key === p.key);
 }
 
-/** Function-like label that the compiler would expand in a header named `name`. */
-function labelMacro(indexer: Indexer, name: string): FunctionInfo | undefined {
-  const top = indexer.getFunction(name);
-  if (top?.origin === "label") return top;
+/**
+ * Roots of the compile units of `file` that compile `other` too, by which
+ * of two definitions of one name the compiler reaches second there, and so
+ * reports: the one `here` in `file` or the one `there` in `other`. Both
+ * are empty when no unit compiles the two together.
+ */
+function secondOf(
+  indexer: Indexer,
+  file: string,
+  other: string,
+): { here: string[]; there: string[] } {
+  const here: string[] = [];
+  const there: string[] = [];
+  for (const o of compileOrder(indexer, file, other)) {
+    (o.before ? there : here).push(o.root);
+  }
+  return { here, there };
+}
+
+/** " when compiling R" when only some compiles of `file` hold a clash: its
+ *  project is compiled by several roots, which differ in whether they
+ *  compile the other definition or in their order. */
+function whenCompiling(
+  indexer: Indexer,
+  file: string,
+  roots: string[],
+): string {
+  return roots.length < indexer.projects.unitsOf(file).length
+    ? ` when compiling ${roots.join(" or ")}`
+    : "";
+}
+
+/** A file whose diagnostics are not shown with `file`'s: a project read
+ *  from outside the workspace, or Include (library code) for another
+ *  project. A compiler error there is reported at `file` instead. */
+function libraryCode(indexer: Indexer, file: string, other: string): boolean {
+  return (
+    indexer.isExternal(other) ||
+    (isIncludeFile(indexer, other) && !isIncludeFile(indexer, file))
+  );
+}
+
+/** The library whose shipped Cicode function `name` stands in for its
+ *  project, compiled with `file` but not indexed (an indexed one has its
+ *  own definitions); undefined for a file of that project. */
+function shippedLibrary(
+  indexer: Indexer,
+  file: string,
+  name: string,
+): string | undefined {
   const b = indexer.getBuiltinFunction(name);
-  return b?.origin === "label" ? b : undefined;
+  if (b?.origin !== "cicode" || b.file || !b.library) return undefined;
+  if (!indexer.projects.hasLibrary(file, b.library)) return undefined;
+  const lib = indexer.projects.libraryProject(file, b.library);
+  if (lib?.key === indexer.projects.projectOf(file).key) return undefined;
+  return indexer
+    .getFunctionCandidatesFor(name, file)
+    .some((c) => c.origin === "cicode" && !c.file)
+    ? b.library
+    : undefined;
+}
+
+/** Function-like label of `file`'s compile that the compiler would expand
+ *  in a header named `name`. */
+function labelMacro(
+  indexer: Indexer,
+  name: string,
+  file: string,
+): FunctionInfo | undefined {
+  const fn = indexer.getFunctionFor(name, file);
+  return fn?.origin === "label" ? fn : undefined;
 }
 
 /** What the compiler makes of a header named like a function-like label;
@@ -155,47 +209,74 @@ function expandHeader(
   return k === T.length - 1 ? { kind: "renamed", name } : bodyCode(k + 1);
 }
 
+/** Another definition the compiler reports a function or GLOBAL with
+ *  (E2021). */
+interface Clash {
+  /** Where the other definition is. */
+  where: string;
+  /** It is compiled after this one, in library code: the compiler reports
+   *  it there. */
+  after: boolean;
+  /** whenCompiling of the units holding the clash. */
+  when: string;
+}
+
 /**
- * Another definition of the function `name` defined in `file` (E2021): where
- * it is, and whether both are certainly in one compile. A PRIVATE function
- * only clashes with a PUBLIC one compiled before it.
+ * Another definition of the function `name` defined in `file` that a unit
+ * compiles with it (E2021): one compiled before it, or one compiled after
+ * it in library code, whose diagnostics are not shown. A definition clashes
+ * with a PUBLIC one compiled before it; another file's PRIVATE one is
+ * invisible to it.
  */
 function functionClash(
   indexer: Indexer,
   file: string,
   name: string,
   isPrivate: boolean,
-): { where: string; sure: boolean } | undefined {
-  const defs = indexer.getFunctionDefinitions(name);
-  let maybe: { where: string; sure: boolean } | undefined;
-  for (const g of defs) {
-    if (!g.file || g.file === file || g.isPrivate) continue;
-    const second = secondOf(file, g.file);
-    if (second === "here") return { where: displayPath(g.file), sure: true };
-    // Unrelated folders: both are in one compile only when one project
-    // includes the other.
-    if (second === "unknown" && !isPrivate) {
-      maybe ??= { where: displayPath(g.file), sure: false };
+): Clash | undefined {
+  let after: Clash | undefined;
+  for (const g of indexer.getFunctionDefinitions(name, file)) {
+    if (!g.file || samePath(g.file, file)) continue;
+    const { here, there } = secondOf(indexer, file, g.file);
+    if (here.length && !g.isPrivate) {
+      return {
+        where: fileLabel(indexer, g.file),
+        after: false,
+        when: whenCompiling(indexer, file, here),
+      };
+    }
+    if (there.length && !isPrivate && libraryCode(indexer, file, g.file)) {
+      after ??= {
+        where: fileLabel(indexer, g.file),
+        after: true,
+        when: whenCompiling(indexer, file, there),
+      };
     }
   }
-  if (maybe) return maybe;
+  if (after || !compiledWith(indexer, file, "")) return after;
 
-  // A documented function that is Cicode in an AVEVA library project the
-  // workspace doesn't hold (otherwise its definition is compared above).
-  const b = indexer.getBuiltinFunction(name);
-  const lib =
-    b?.origin === "cicode" && !b.file ? b.library?.toLowerCase() : undefined;
-  if (
-    !lib ||
-    folderName(file) === lib ||
-    defs.some((g) => g.file && folderName(g.file) === lib)
-  ) {
-    return undefined;
+  // A documented function that is Cicode in an AVEVA library project
+  // compiled with the file but not indexed: Include compiles first, another
+  // library where its units put it.
+  const lib = shippedLibrary(indexer, file, name);
+  if (!lib) return undefined;
+  const where = `the ${lib} project`;
+  const libKey = indexer.projects.libraryProject(file, lib)?.key;
+  if (!libKey) return { where, after: false, when: "" };
+  const own = indexer.projects.projectOf(file).key;
+  const here: string[] = [];
+  const there: string[] = [];
+  for (const u of indexer.projects.unitsOf(file)) {
+    const at = u.projects.indexOf(libKey);
+    if (at >= 0) (at < u.projects.indexOf(own) ? here : there).push(u.root);
   }
-  if (lib === "include") return { where: "the Include project", sure: true };
-  return isPrivate
-    ? undefined
-    : { where: `the ${b!.library} project`, sure: false };
+  if (here.length) {
+    return { where, after: false, when: whenCompiling(indexer, file, here) };
+  }
+  if (there.length && !isPrivate) {
+    return { where, after: true, when: whenCompiling(indexer, file, there) };
+  }
+  return undefined;
 }
 
 /** A scope keyword after the return type, or a second one: E2031. */
@@ -286,13 +367,14 @@ export const functionDefsRule: Rule = {
         );
       }
 
-      // The name the compiler defines: a function-like label in the header
-      // is expanded first.
+      // The name the compiler defines: a label in the header is expanded
+      // first.
       let name = f.name;
       let say = (rest: string) => `Function '${f.name}' ${rest}`;
       let labelSure = true;
       let sig = "";
-      const macro = labelMacro(indexer, f.name);
+      let renamed = false;
+      const macro = labelMacro(indexer, f.name, file);
       if (macro) {
         labelSure = entryInCompile(indexer, file, macro);
         sig = `${macro.name}(${macro.params.join(", ")})`;
@@ -322,11 +404,10 @@ export const functionDefsRule: Rule = {
           continue;
         }
         name = x.name;
-        say = (rest: string) =>
-          `The label ${sig} renames this function to '${name}', which ${rest}`;
+        renamed = true;
       } else {
         // A constant label followed by anything in parentheses, even blanks.
-        const label = indexer.getLabel(f.name);
+        const label = indexer.getLabel(f.name, file);
         if (label && f.hasParens && f.paramsRaw.length) {
           diags.push(
             diag(
@@ -338,6 +419,10 @@ export const functionDefsRule: Rule = {
           );
           continue;
         }
+      }
+      if (renamed) {
+        say = (rest: string) =>
+          `The label ${sig} renames this function to '${name}', which ${rest}`;
       }
       const reported = diags.length;
       const key = nameKey(name);
@@ -361,29 +446,44 @@ export const functionDefsRule: Rule = {
           diag(
             range,
             say(
-              `is ${clash.sure ? "already" : "also"} defined in ${clash.where}.`,
+              clash.after
+                ? `is defined again in ${clash.where}, compiled after it${clash.when}; the compiler reports that one.`
+                : `is already defined in ${clash.where}${clash.when}.`,
             ),
-            clash.sure && labelSure ? ERROR : WARNING,
+            labelSure ? ERROR : WARNING,
             "E2021",
           ),
         );
       }
 
-      // Variables are registered before functions: a GLOBAL anywhere, or a
-      // file-level variable declared above the function in its file.
-      const vars = indexer.getVariables(name);
+      // Variables are registered before functions: a GLOBAL compiled with
+      // it, or a file-level variable declared above the function in its
+      // file.
+      const vars = indexer.getVariables(name, file);
       const globals = vars.filter(
-        (v) => v.scopeType === "global" && !v.isParam && isCiFile(v.file),
+        (v) =>
+          v.scopeType === "global" &&
+          !v.isParam &&
+          isCiFile(v.file) &&
+          compiledWith(indexer, file, v.file),
       );
-      const global = globals.find((v) => inCompile(file, v.file)) ?? globals[0];
+      const global = globals.find((v) => samePath(v.file, file)) ?? globals[0];
       if (global) {
+        const here = samePath(global.file, file);
+        const when = here
+          ? ""
+          : whenCompiling(
+              indexer,
+              file,
+              compileOrder(indexer, file, global.file).map((o) => o.root),
+            );
         diags.push(
           diag(
             range,
             say(
-              `has the same name as the GLOBAL variable declared in ${global.file === file ? "this file" : displayPath(global.file)}.`,
+              `has the same name as the GLOBAL variable declared in ${here ? "this file" : fileLabel(indexer, global.file)}${when}.`,
             ),
-            inCompile(file, global.file) && labelSure ? ERROR : WARNING,
+            labelSure ? ERROR : WARNING,
             "E2021",
           ),
         );
@@ -516,26 +616,31 @@ function checkVariables(
       continue;
     }
 
+    // Another GLOBAL compiled before it, or after it in library code.
     let clash: vscode.Diagnostic | undefined;
-    for (const o of indexer.getVariables(v.name)) {
-      if (o.scopeType !== "global" || o.file === file || !isCiFile(o.file)) {
+    for (const o of indexer.getVariables(v.name, file)) {
+      if (
+        o.scopeType !== "global" ||
+        samePath(o.file, file) ||
+        !isCiFile(o.file)
+      ) {
         continue;
       }
-      const second = secondOf(file, o.file);
-      if (second === "here") {
+      const { here, there } = secondOf(indexer, file, o.file);
+      if (here.length) {
         clash = diag(
           nameRange(v),
-          `GLOBAL variable '${v.name}' is already defined in ${displayPath(o.file)}.`,
+          `GLOBAL variable '${v.name}' is already defined in ${fileLabel(indexer, o.file)}${whenCompiling(indexer, file, here)}.`,
           ERROR,
           "E2021",
         );
         break;
       }
-      if (second === "unknown") {
+      if (there.length && libraryCode(indexer, file, o.file)) {
         clash ??= diag(
           nameRange(v),
-          `GLOBAL variable '${v.name}' is also defined in ${displayPath(o.file)}.`,
-          WARNING,
+          `GLOBAL variable '${v.name}' is defined again in ${fileLabel(indexer, o.file)}, compiled after it${whenCompiling(indexer, file, there)}; the compiler reports that one.`,
+          ERROR,
           "E2021",
         );
       }
@@ -545,21 +650,29 @@ function checkVariables(
       continue;
     }
 
+    // The compiler reports a GLOBAL named like a function at the function
+    // (PUBLIC or PRIVATE), in any order; for library code the fix is here.
     const builtin = indexer.getBuiltinFunction(v.name);
-    const includeFunction =
-      (builtin?.origin === "cicode" &&
-        !builtin.file &&
-        builtin.library?.toLowerCase() === "include") ||
-      indexer
-        .getFunctionDefinitions(v.name)
-        .some((g) => g.file && isIncludeFile(g.file));
-    if (includeFunction && !isIncludeFile(file)) {
-      // The compiler reports it at the Include function (PUBLIC or PRIVATE),
-      // which is library code; the fix is here.
+    const libFn = indexer
+      .getFunctionDefinitions(v.name, file)
+      .find((g) => !!g.file && libraryCode(indexer, file, g.file));
+    const lib = !compiledWith(indexer, file, "")
+      ? undefined
+      : libFn?.file
+        ? projectName(indexer, libFn.file)
+        : shippedLibrary(indexer, file, v.name);
+    if (lib) {
+      const when = libFn?.file
+        ? whenCompiling(
+            indexer,
+            file,
+            compileOrder(indexer, file, libFn.file).map((o) => o.root),
+          )
+        : "";
       diags.push(
         diag(
           nameRange(v),
-          `GLOBAL variable '${v.name}' has the same name as a function of the Include project.`,
+          `GLOBAL variable '${v.name}' has the same name as a function of the ${lib} project${when}.`,
           ERROR,
           "E2021",
         ),

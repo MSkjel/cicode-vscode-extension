@@ -1,3 +1,4 @@
+import * as path from "path";
 import * as vscode from "vscode";
 import type { Indexer } from "../../core/indexer/indexer";
 
@@ -18,13 +19,20 @@ export function makeSymbols(indexer: Indexer, workspace = false) {
       cache = null;
     });
 
+    // Definitions in workspace projects only: projects outside it (also
+    // those of files opened from outside it) are indexed to resolve names,
+    // not listed.
+    const listed = (file: string | null) =>
+      !!file &&
+      (!path.isAbsolute(file) || indexer.projects.projectOf(file).inWorkspace);
+
     function buildCache(): CachedSym[] {
       const result: CachedSym[] = [];
-      for (const [key] of indexer.getAllFunctions()) {
+      for (const key of indexer.getFunctionNames()) {
         // Every .ci definition: PRIVATE functions of the same name may exist
         // in several files. Built-ins and labels have no source location.
         for (const f of indexer.getFunctionDefinitions(key)) {
-          if (!f.location) continue;
+          if (!f.location || !listed(f.file)) continue;
           result.push({
             lower: f.name.toLowerCase(),
             sym: new vscode.SymbolInformation(
@@ -37,7 +45,7 @@ export function makeSymbols(indexer: Indexer, workspace = false) {
         }
       }
       for (const v of indexer.getAllVariableEntries()) {
-        if (!v.location) continue;
+        if (!v.location || !listed(v.file)) continue;
         const detail =
           v.scopeType === "global"
             ? "Global"

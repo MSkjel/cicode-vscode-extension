@@ -65,7 +65,7 @@ export function registerCommands(
   cmds.push(
     vscode.commands.registerCommand(
       "cicode.openHelpForSymbol",
-      async (symbol?: string) => {
+      async (symbol?: string, fromFile?: string) => {
         const editor = vscode.window.activeTextEditor;
         if (!symbol && !editor) return;
 
@@ -80,15 +80,21 @@ export function registerCommands(
           }
         }
 
-        // A workspace copy of a documented library function (Include's
-        // PageGoto, ...) hides the builtin entry that carries the help link.
-        const found = editor
-          ? indexer.getFunctionFor(name, editor.document.uri.fsPath)
-          : indexer.getFunction(name);
+        // The function a call from the file reaches (the hover passes its
+        // file); a copy of a documented library function without the help
+        // falls back to the builtin entry that carries the help link, where
+        // that library is compiled with the file.
+        const file = fromFile ?? editor?.document.uri.fsPath;
+        const found = file ? indexer.getFunctionFor(name, file) : undefined;
+        const b = indexer.getBuiltinFunction(name);
         const f =
-          found?.helpId || found?.helpPath
+          found?.helpId ||
+          found?.helpPath ||
+          (found &&
+            b?.library &&
+            !indexer.projects.hasLibrary(file!, b.library))
             ? found
-            : (indexer.getBuiltinFunction(name) ?? found);
+            : (b ?? found);
 
         // Preferred (2023 R2+): deep-link into the local AVEVA help server.
         // HelpDocumentationViewer serves the Author-it portal and resolves the

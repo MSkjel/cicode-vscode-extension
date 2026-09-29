@@ -11,14 +11,15 @@ export function makeStatusBar(indexer: Indexer): vscode.Disposable {
   item.show();
 
   const refresh = () => {
-    const f = indexer.getAllFunctions().size;
+    // Function names of every indexed project
+    const f = indexer.getFunctionNames().size;
     const v = indexer.getTotalVariableCount();
     item.text = `Cicode: ${f} funcs | ${v} vars`;
     item.tooltip = "Click to reindex workspace";
   };
 
   // Debounce refreshes: onIndexed can fire in bursts (per-file reindexes,
-  // mass deletes/renames), and each refresh rebuilds the merged function map
+  // mass deletes/renames), and each refresh collects every function name
   // and recounts all variables just to update a label.
   let timer: NodeJS.Timeout | undefined;
   const subscription = indexer.onIndexed(() => {

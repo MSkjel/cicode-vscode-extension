@@ -35,7 +35,8 @@ export const invalidTypesRule: Rule = {
     const file = doc.uri.fsPath;
     const ranges = indexer.getFunctionRanges(file);
     const T = tokensOf(text);
-    const valid = (t: string) => CICODE_TYPES.has(t) || !!typeLabel(indexer, t);
+    const valid = (t: string) =>
+      CICODE_TYPES.has(t) || !!typeLabel(indexer, t, file);
     let rangesByScope: Map<string, FunctionRange> | undefined;
 
     for (const v of indexer.getVariablesInFile(file)) {

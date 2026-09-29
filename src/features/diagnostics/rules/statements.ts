@@ -1,5 +1,7 @@
 import type { Indexer } from "../../../core/indexer/indexer";
+import type { LabelRecord } from "../../../core/indexer/labelsReader";
 import type { FunctionRange } from "../../../core/indexer/types";
+import type { FunctionInfo } from "../../../shared/types";
 import { CICODE_TYPES, RESERVED_WORDS } from "../../../shared/constants";
 import {
   OPERATOR_WORDS,
@@ -10,7 +12,7 @@ import {
   scanIgnoreSpans,
   upperAscii,
 } from "../../../shared/textUtils";
-import { inCompile } from "../context";
+import { inCompile, unitComplete } from "../context";
 
 // Tokens and statement structure of function bodies, read the way the
 // compiler reads them (newlines and semicolons carry no meaning). Labels are
@@ -878,6 +880,38 @@ export function argumentKind(
 }
 
 // =============================================================================
+// Compile units
+// =============================================================================
+
+/**
+ * The definitions a call to `name` in `file` reaches, getFunctionFor's
+ * first, then one per other compile unit of the file that reaches another
+ * (a project compiled by several roots). Empty when none is defined.
+ */
+export function reachedFunctions(
+  indexer: Indexer,
+  name: string,
+  file: string,
+  perUnit = indexer.getFunctionsByUnit(name, file),
+): FunctionInfo[] {
+  const out: FunctionInfo[] = [];
+  for (const { fn } of perUnit) {
+    if (fn && !out.includes(fn)) out.push(fn);
+  }
+  return out;
+}
+
+/** True when every project compiled with `file` is known: every include row
+ *  of its units resolved and each project is indexed (the workspace's, or
+ *  read from disk for an opened file's project), so a name none of them
+ *  defines is unknown to the compiler. A folder no project owns, or one
+ *  inside a project's folder (an overlay: the compiler reads <PATH>\*.ci
+ *  only), is compiled by no root, so nothing is certain. */
+export function unitsKnown(indexer: Indexer, file: string): boolean {
+  return !indexer.projects.projectOf(file).stray && unitComplete(indexer, file);
+}
+
+// =============================================================================
 // Labels
 // =============================================================================
 
@@ -895,10 +929,15 @@ export interface LabelDef {
   readonly include: boolean;
 }
 
-/** The label `name` expands (the compiler replaces every name that is a
- *  label, declarations included), or undefined. */
-export function labelOf(indexer: Indexer, name: string): LabelDef | undefined {
-  const fn = indexer.getFunction(name);
+/** The label `name` expands in `file` (the compiler replaces every name
+ *  that is a label of its compile, declarations included), or undefined. */
+export function labelOf(
+  indexer: Indexer,
+  name: string,
+  file: string,
+): LabelDef | undefined {
+  if (!indexer.isKnownLabel(name, file)) return undefined;
+  const fn = indexer.getFunctionFor(name, file);
   if (fn?.origin === "label") {
     const expr = fn.expr ?? "";
     return {
@@ -909,7 +948,7 @@ export function labelOf(indexer: Indexer, name: string): LabelDef | undefined {
       include: fn.library?.toLowerCase() === "include",
     };
   }
-  const c = indexer.getLabel(name);
+  const c = indexer.getLabel(name, file);
   if (!c) return undefined;
   return {
     expr: c.expr,
@@ -963,18 +1002,24 @@ function structural(T: readonly Token[]): boolean {
   return broken;
 }
 
-/** True when `name` is a label whose text changes the block structure, or
- *  a label named like a reserved word (it replaces the keyword). */
-export function isStructuralLabel(indexer: Indexer, name: string): boolean {
-  const lab = labelOf(indexer, name);
+/** True when `name` is a label of `file`'s compile whose text changes the
+ *  block structure, or one named like a reserved word (it replaces the
+ *  keyword). */
+export function isStructuralLabel(
+  indexer: Indexer,
+  name: string,
+  file: string,
+): boolean {
+  const lab = labelOf(indexer, name, file);
   if (!lab) return false;
   return RESERVED_WORDS.has(name.toUpperCase()) || infoOf(lab.expr).structural;
 }
 
-/** True when a label used in tokens [start, end) changes the block
- *  structure, so the parsed statements may not be the compiler's. */
+/** True when a label used in tokens [start, end) of `file` changes the
+ *  block structure, so the parsed statements may not be the compiler's. */
 export function usesStructuralLabel(
   indexer: Indexer,
+  file: string,
   text: string,
   T: readonly Token[],
   start: number,
@@ -984,7 +1029,7 @@ export function usesStructuralLabel(
     const t = T[k];
     if (
       t.kind === "w" &&
-      isStructuralLabel(indexer, text.slice(t.start, t.end))
+      isStructuralLabel(indexer, text.slice(t.start, t.end), file)
     ) {
       return true;
     }
@@ -992,34 +1037,48 @@ export function usesStructuralLabel(
   return false;
 }
 
-/** Is `lab` certainly compiled with `file`? True for the Include project's
- *  labels (every project includes it) and the file's own project's; another
- *  project's labels may not be in its include tree. */
+/** Is `lab` certainly compiled with `file`? True for the shipped Include
+ *  labels (every project includes Include) and a labels.DBF of a project
+ *  sharing a compile unit with the file, the only ones labelOf finds. */
 export function labelCertain(
   indexer: Indexer,
   lab: LabelDef,
   file: string,
 ): boolean {
   if (lab.include) return true;
-  return (
-    !!lab.file &&
-    (indexer.getExternalLabelFiles().includes(lab.file) ||
-      inCompile(file, lab.file))
-  );
+  return !!lab.file && inCompile(indexer, file, lab.file);
 }
 
-/** True when some label expands to a type: declarations and headers
- *  written with it are not indexed as such. */
-export function hasTypeLabels(indexer: Indexer): boolean {
-  for (const rec of indexer.getAllLabels().values()) {
-    if (CICODE_TYPES.has(rec.expr.trim().toUpperCase())) return true;
+// Per visible label set (getAllLabels, rebuilt on any change): whether a
+// label expands to a type.
+const typeLabelSets = new WeakMap<ReadonlyMap<string, LabelRecord>, boolean>();
+
+/** True when some label of `file`'s compile expands to a type:
+ *  declarations and headers written with it are not indexed as such. */
+export function hasTypeLabels(indexer: Indexer, file: string): boolean {
+  const labels = indexer.getAllLabels(file);
+  let has = typeLabelSets.get(labels);
+  if (has === undefined) {
+    has = false;
+    for (const rec of labels.values()) {
+      if (CICODE_TYPES.has(rec.expr.trim().toUpperCase())) {
+        has = true;
+        break;
+      }
+    }
+    typeLabelSets.set(labels, has);
   }
-  return false;
+  return has;
 }
 
-/** Upper-case type a label expands to, when it is one of the six types. */
-export function typeLabel(indexer: Indexer, name: string): string | undefined {
-  const e = indexer.getLabel(name)?.expr.trim().toUpperCase();
+/** Upper-case type the label `name` of `file`'s compile expands to, when it
+ *  is one of the six types. */
+export function typeLabel(
+  indexer: Indexer,
+  name: string,
+  file: string,
+): string | undefined {
+  const e = indexer.getLabel(name, file)?.expr.trim().toUpperCase();
   return e && CICODE_TYPES.has(e) ? e : undefined;
 }
 

@@ -66,12 +66,13 @@ function firstTokenAt(tokens: readonly Token[], offset: number): number {
 type Operand = "call" | "literal" | "variable" | "computed" | "unknown";
 
 /**
- * Kind of the operand at tokens[i] (labels decide by what they expand to;
- * a function-like label or a function named without parentheses is left
- * unknown), and the index after it.
+ * Kind of the operand at tokens[i] of `file` (labels decide by what they
+ * expand to; a function-like label or a function named without parentheses
+ * is left unknown), and the index after it.
  */
 function operand(
   indexer: Indexer,
+  file: string,
   tokens: readonly Token[],
   i: number,
   end: number,
@@ -88,7 +89,7 @@ function operand(
   if (isOp(t, "(")) {
     const j = closing(tokens, i, end);
     if (j === -1) return { kind: "unknown", next: end };
-    const inner = operand(indexer, tokens, i + 1, j);
+    const inner = operand(indexer, file, tokens, i + 1, j);
     const kind =
       inner.next === j
         ? inner.kind
@@ -101,19 +102,19 @@ function operand(
     return { kind: "unknown", next: i + 1 };
   }
 
-  const fn = indexer.getFunction(t.text);
+  const fn = indexer.getFunctionFor(t.text, file);
   if (isOp(tokens[i + 1], "(")) {
     const j = closing(tokens, i + 1, end);
     const labelled =
       fn?.origin === "label" ||
       indexer.getBuiltinFunction(t.text)?.origin === "label" ||
-      indexer.getLabel(t.text) !== undefined;
+      indexer.getLabel(t.text, file) !== undefined;
     return {
       kind: labelled || j === -1 ? "unknown" : "call",
       next: j === -1 ? end : j + 1,
     };
   }
-  const label = indexer.getLabel(t.text);
+  const label = indexer.getLabel(t.text, file);
   if (label) {
     return {
       kind: LITERAL_RE.test(label.expr) ? "literal" : "unknown",
@@ -121,7 +122,7 @@ function operand(
     };
   }
   if (INCLUDE_BOOL_LABELS.has(t.text)) return { kind: "literal", next: i + 1 };
-  if (fn && !indexer.getVariables(t.text).length) {
+  if (fn && !indexer.getVariables(t.text, file).length) {
     return { kind: "unknown", next: i + 1 };
   }
   return { kind: "variable", next: i + 1 };
@@ -136,6 +137,7 @@ function operand(
  */
 function leavesValue(
   indexer: Indexer,
+  file: string,
   tokens: readonly Token[],
   i: number,
   end: number,
@@ -144,7 +146,7 @@ function leavesValue(
   if (!t || i >= end || isOp(t, ";")) return false;
 
   if (t.kind === "w" && !KEYWORDS.has(t.text)) {
-    const first = operand(indexer, tokens, i, end);
+    const first = operand(indexer, file, tokens, i, end);
     if (first.kind === "call") return isBinaryOp(tokens[first.next]);
     if (first.kind === "literal") return true;
     if (first.kind !== "variable") return false;
@@ -164,7 +166,7 @@ function leavesValue(
   ) {
     k++;
   }
-  const first = operand(indexer, tokens, k, end);
+  const first = operand(indexer, file, tokens, k, end);
   if (first.kind === "literal" || first.kind === "variable") return true;
   return first.kind === "computed" && k === i;
 }
@@ -174,6 +176,7 @@ function leavesValue(
  *  (the header is an error then). */
 function returnTypeOf(
   indexer: Indexer,
+  file: string,
   tokens: readonly Token[],
   written: string,
   keywordAt: number,
@@ -182,7 +185,7 @@ function returnTypeOf(
   if (type !== "VOID") return CICODE_TYPES.has(type) ? type : undefined;
   const prev = tokens[firstTokenAt(tokens, keywordAt) - 1];
   if (prev?.kind === "w" && !KEYWORDS.has(prev.text)) {
-    const expr = indexer.getLabel(prev.text)?.expr.trim().toUpperCase();
+    const expr = indexer.getLabel(prev.text, file)?.expr.trim().toUpperCase();
     if (expr && CICODE_TYPES.has(expr)) return expr;
   }
   return "VOID";
@@ -191,6 +194,7 @@ function returnTypeOf(
 /** True when a label used in tokens [start, end) supplies a RETURN. */
 function labelReturns(
   indexer: Indexer,
+  file: string,
   text: string,
   tokens: readonly Token[],
   start: number,
@@ -200,9 +204,9 @@ function labelReturns(
     const t = tokens[k];
     if (t.kind !== "w" || KEYWORDS.has(t.text)) continue;
     const name = text.slice(t.start, t.end);
-    const fn = indexer.getFunction(name);
+    const fn = indexer.getFunctionFor(name, file);
     const expr =
-      fn?.origin === "label" ? fn.expr : indexer.getLabel(name)?.expr;
+      fn?.origin === "label" ? fn.expr : indexer.getLabel(name, file)?.expr;
     if (expr && lex(expr).tokens.some((x) => x.text === "RETURN")) {
       return true;
     }
@@ -228,13 +232,15 @@ export const returnTypeRule: Rule = {
     if (!diagnosticsEnabled) return [];
 
     const diags: vscode.Diagnostic[] = [];
-    const fns = indexer.getFunctionRanges(doc.uri.fsPath);
+    const file = doc.uri.fsPath;
+    const fns = indexer.getFunctionRanges(file);
     if (!fns.length) return diags;
     const { tokens } = lex(text);
 
     for (const f of fns) {
       const returnType = returnTypeOf(
         indexer,
+        file,
         tokens,
         f.returnType,
         f.headerIndex,
@@ -255,7 +261,7 @@ export const returnTypeRule: Rule = {
         const next = tokens[i + 1];
 
         if (returnType === "VOID") {
-          if (leavesValue(indexer, tokens, i + 1, end)) {
+          if (leavesValue(indexer, file, tokens, i + 1, end)) {
             diags.push(
               diag(
                 range,
@@ -301,8 +307,8 @@ export const returnTypeRule: Rule = {
           tokens[end - 2]?.kind === "w" &&
           CICODE_TYPES.has(tokens[end - 2].text)
         ) &&
-        !usesStructuralLabel(indexer, text, tokens, first, end) &&
-        !labelReturns(indexer, text, tokens, first, end)
+        !usesStructuralLabel(indexer, file, text, tokens, first, end) &&
+        !labelReturns(indexer, file, text, tokens, first, end)
       ) {
         diags.push(
           diag(

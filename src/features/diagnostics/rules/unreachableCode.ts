@@ -24,9 +24,10 @@ export const unreachableCodeRule: Rule = {
 
     const diags: vscode.Diagnostic[] = [];
 
-    for (const f of indexer.getFunctionRanges(doc.uri.fsPath)) {
+    const file = doc.uri.fsPath;
+    for (const f of indexer.getFunctionRanges(file)) {
       const { tokens: T, stmts, start, end } = functionBody(text, f);
-      if (usesStructuralLabel(indexer, text, T, start, end)) continue;
+      if (usesStructuralLabel(indexer, file, text, T, start, end)) continue;
       const typed = f.returnType !== "VOID";
 
       const visit = (list: readonly Stmt[]) => {

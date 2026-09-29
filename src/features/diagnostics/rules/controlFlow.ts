@@ -1,10 +1,11 @@
 import * as vscode from "vscode";
 import type { Rule } from "../rule";
-import { inCompile, type CheckContext } from "../context";
+import { entryInCompile, inCompile, type CheckContext } from "../context";
 import { diag } from "../diag";
 import type { Indexer } from "../../../core/indexer/indexer";
 import type { FunctionRange } from "../../../core/indexer/types";
 import { CICODE_TYPES } from "../../../shared/constants";
+import type { FunctionInfo } from "../../../shared/types";
 import { isNameChar } from "../../../shared/textUtils";
 import {
   SCOPE_WORDS,
@@ -18,6 +19,7 @@ import {
   lexErrorsOf,
   lexTokens,
   operandEnd,
+  reachedFunctions,
   tokenAt,
   tokensOf,
   typeLabel,
@@ -190,7 +192,9 @@ export const controlFlowRule: Rule = {
       ) => diags.push(diag(range(a, b), message, severity, code));
 
       const reported = checkTokens(f, body);
-      if (usesStructuralLabel(indexer, text, T, body.start, body.end)) continue;
+      if (usesStructuralLabel(indexer, file, text, T, body.start, body.end)) {
+        continue;
+      }
 
       // `END IF`, `END WHILE`, `END FOR` written as one closer on one line.
       const afterEnd = (s: Stmt) =>
@@ -370,7 +374,7 @@ export const controlFlowRule: Rule = {
         name: string,
         vt: Token,
       ): { message: string; code: string } | undefined {
-        if (labelOf(indexer, name)) return undefined;
+        if (labelOf(indexer, name, file)) return undefined;
         const v = indexer.resolveVariableInScope(
           name,
           file,
@@ -379,10 +383,10 @@ export const controlFlowRule: Rule = {
         );
         const written = v?.type.replace(/\[.*/, "").trim().toUpperCase() ?? "";
         // The type may be a label that expands to one.
-        const type = typeLabel(indexer, written) ?? written;
+        const type = typeLabel(indexer, written, file) ?? written;
         if (!v || v.scopeType === "global" || !CICODE_TYPES.has(type)) {
           // Variables declared through a label type are not indexed.
-          typeLabels ??= hasTypeLabels(indexer);
+          typeLabels ??= hasTypeLabels(indexer, file);
           if (!v && typeLabels) return undefined;
           return {
             message: `Tag not found: FOR loop variable '${name}' must be a local, parameter or module variable of this file, declared before the loop${v?.scopeType === "global" ? " (not GLOBAL)" : ""}.`,
@@ -476,7 +480,7 @@ export const controlFlowRule: Rule = {
           const w = t.text;
           if (
             (w === "NOP" || w === "VAR" || w === "CICODE" || w === "CIVBA") &&
-            !labelOf(indexer, text.slice(t.start, t.end))
+            !labelOf(indexer, text.slice(t.start, t.end), file)
           ) {
             if (w === "CIVBA") {
               code = "E2074";
@@ -673,7 +677,7 @@ class ConditionTypes {
     if (!isIdentifier(t)) return undefined;
 
     const name = this.text.slice(t.start, t.end);
-    const lab = labelOf(this.indexer, name);
+    const lab = labelOf(this.indexer, name, this.file);
     if (lab) {
       if (b !== a + 1) return undefined;
       const lt = lexTokens(lab.expr);
@@ -693,28 +697,42 @@ class ConditionTypes {
         this.scopeId,
         this.doc.positionAt(t.start),
       );
-      if (!v || (v.file && !inCompile(this.file, v.file))) return undefined;
-      return this.typeOf(v.type);
-    }
-    if (isToken(next, "(") && closeEnd(T, a + 1, b) === b) {
-      const fn = this.indexer.getFunctionFor(name, this.file);
-      if (fn?.origin === "builtin") return valueType(fn.returnType);
-      if (fn?.origin !== "cicode") return undefined;
+      if (!v || !inCompile(this.indexer, this.file, v.file)) return undefined;
+      const type = this.typeOf(v.type);
+      // Roots compiling the file's project may declare it differently.
       if (
-        fn.file
-          ? !inCompile(this.file, fn.file)
-          : fn.library?.toLowerCase() !== "include"
+        v.scopeType === "global" &&
+        this.indexer
+          .getVariables(name, this.file)
+          .some((o) => o.scopeType === "global" && this.typeOf(o.type) !== type)
       ) {
         return undefined;
       }
-      return this.typeOf(fn.returnType);
+      return type;
+    }
+    if (isToken(next, "(") && closeEnd(T, a + 1, b) === b) {
+      const types = new Set(
+        reachedFunctions(this.indexer, name, this.file).map((fn) =>
+          this.returnTypeOf(fn),
+        ),
+      );
+      return types.size === 1 ? [...types][0] : undefined;
     }
     return undefined;
+  }
+
+  /** Value type a call to `fn` returns; undefined for a label or a
+   *  definition not compiled with the file. */
+  private returnTypeOf(fn: FunctionInfo): ValueType | undefined {
+    if (fn.origin === "builtin") return valueType(fn.returnType);
+    if (fn.origin !== "cicode") return undefined;
+    if (!entryInCompile(this.indexer, this.file, fn)) return undefined;
+    return this.typeOf(fn.returnType);
   }
 
   /** Value type of a declared type, which may be a label that expands to one. */
   private typeOf(type: string): ValueType | undefined {
     const t = type.replace(/\[.*/, "").trim();
-    return valueType(typeLabel(this.indexer, t) ?? t);
+    return valueType(typeLabel(this.indexer, t, this.file) ?? t);
   }
 }

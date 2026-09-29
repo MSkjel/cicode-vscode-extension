@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import type { Rule } from "../rule";
-import { inCompile, type CheckContext } from "../context";
+import { entryInCompile, visibleFrom, type CheckContext } from "../context";
 import { diag } from "../diag";
 import type { FunctionInfo } from "../../../shared/types";
 import { ALL_TYPES, INCLUDE_BOOL_LABELS } from "../../../shared/constants";
@@ -58,7 +58,7 @@ export const undeclaredVarsRule: Rule = {
       .getVariablesInFile(file)
       .filter((v) => v.scopeType !== "global")
       .flatMap((v) => {
-        const l = labelOf(indexer, v.name);
+        const l = labelOf(indexer, v.name, file);
         return l?.isName ? [{ v, to: upperAscii(l.expr.trim()) }] : [];
       });
 
@@ -70,7 +70,7 @@ export const undeclaredVarsRule: Rule = {
         typeLabelled = new Set();
         const all = tokensOf(text);
         for (let k = 0; k + 1 < all.length; k++) {
-          if (!isIdentifier(all[k]) || !typeLabel(indexer, all[k].text))
+          if (!isIdentifier(all[k]) || !typeLabel(indexer, all[k].text, file))
             continue;
           for (let j = k + 1; isIdentifier(all[j]); j += 2) {
             typeLabelled.add(all[j].text);
@@ -111,7 +111,7 @@ export const undeclaredVarsRule: Rule = {
         const range = () =>
           new vscode.Range(doc.positionAt(t.start), doc.positionAt(t.end));
 
-        const lab = labelOf(indexer, name);
+        const lab = labelOf(indexer, name, file);
         if (lab) {
           if (lab.needsArgs) {
             diags.push(
@@ -166,14 +166,12 @@ export const undeclaredVarsRule: Rule = {
         if (fn && visible) {
           const d = bareCicodeFunction(fn, name, kindOf(), range());
           if (d) {
-            // A function of another project folder may not be compiled
-            // with this file; the name would then be a tag. A return type
-            // written as a label is indexed as VOID.
+            // A return type written as a label is indexed as VOID.
             if (
-              !certain(fn, file) ||
+              !entryInCompile(indexer, file, fn) ||
               (d.code === "E2024" &&
                 fn.returnType === "VOID" &&
-                hasTypeLabels(indexer))
+                hasTypeLabels(indexer, file))
             ) {
               d.severity = WARNING;
             }
@@ -221,7 +219,14 @@ export const undeclaredVarsRule: Rule = {
         diags.push(
           diag(
             range(),
-            undeclaredMessage(name, file, scopeId, indexer.getVariables(name)),
+            undeclaredMessage(
+              name,
+              file,
+              scopeId,
+              indexer
+                .getVariables(name)
+                .filter((v) => visibleFrom(indexer, file, v.file)),
+            ),
             WARNING,
             "W1007",
           ),
@@ -272,12 +277,6 @@ function bareCicodeFunction(
         "E2019",
       );
   }
-}
-
-/** True when function `fn` is certainly part of `file`'s compile. */
-function certain(fn: FunctionInfo, file: string): boolean {
-  if (fn.file) return inCompile(file, fn.file);
-  return fn.library === undefined || fn.library.toLowerCase() === "include";
 }
 
 function undeclaredMessage(

@@ -158,9 +158,19 @@ export class ReferenceCache implements vscode.Disposable {
     return this.symbolRefs.get(key);
   }
 
-  /** Get reference count for a function name. Returns 0 if not cached. */
-  getReferenceCount(symbolName: string): number {
-    return this.symbolRefs.get(nameKey(symbolName))?.count ?? 0;
+  /** Get reference count for a function name, of the files `keepFile`
+   *  accepts. Returns 0 if not cached; while a new name's scan is pending,
+   *  the count of the files scanned so far. */
+  getReferenceCount(
+    symbolName: string,
+    keepFile?: (file: string) => boolean,
+  ): number {
+    const entry = this.symbolRefs.get(nameKey(symbolName));
+    if (!entry) return 0;
+    if (!keepFile) return entry.count;
+    let n = 0;
+    for (const r of entry.refs) if (keepFile(r.file)) n++;
+    return n;
   }
 
   /** Convert raw references to `vscode.Location` objects. */
@@ -549,12 +559,9 @@ export class ReferenceCache implements vscode.Disposable {
   }
 
   /** Keys (nameKey) of every function the indexer knows (built-ins, .ci
-   *  functions and label macros). */
+   *  functions and label macros of every project); which definition a
+   *  reference reaches is decided per file when it is read. */
   private _collectFunctionNames(): Set<string> {
-    const names = new Set<string>();
-    for (const [key] of this.indexer.getAllFunctions()) {
-      names.add(key);
-    }
-    return names;
+    return this.indexer.getFunctionNames();
   }
 }

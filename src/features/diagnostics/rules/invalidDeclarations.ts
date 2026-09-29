@@ -20,6 +20,7 @@ import {
   shortExpr,
   tokenAt,
   tokensOf,
+  unitsKnown,
   usesStructuralLabel,
   walkStatements,
   word,
@@ -129,10 +130,8 @@ export const invalidDeclarationsRule: Rule = {
     /** Reports a declared name that is a label. */
     const labelName = (tok: number, where: Where) => {
       const name = text.slice(T[tok].start, T[tok].end);
-      const lab = labelOf(indexer, name);
+      const lab = labelOf(indexer, name, file);
       if (!lab) return;
-      // A label outside the Include project and this file's project may not
-      // be in its include tree.
       const sev = labelCertain(indexer, lab, file)
         ? vscode.DiagnosticSeverity.Error
         : vscode.DiagnosticSeverity.Warning;
@@ -253,7 +252,7 @@ export const invalidDeclarationsRule: Rule = {
     // File scope: the tokens outside the functions. Function ranges don't
     // follow labels that hold block keywords.
     const items = [...functions].sort((a, b) => a.itemStart - b.itemStart);
-    const strays = !usesStructuralLabel(indexer, text, T, 0, T.length);
+    const strays = !usesStructuralLabel(indexer, file, text, T, 0, T.length);
     let from = 0;
     for (let k = 0; k <= items.length; k++) {
       const to = k < items.length ? tokenAt(T, items[k].itemStart) : T.length;
@@ -339,7 +338,7 @@ function checkFileScope(fs: FileScope, from: number): void {
       RESERVED_WORDS.has(name.text) &&
       name.text !== "FUNCTION" &&
       !SCOPE_WORDS.has(name.text) &&
-      !labelOf(indexer, src.slice(name.start, name.end))
+      !labelOf(indexer, src.slice(name.start, name.end), fs.file)
     ) {
       push(
         typeTok + 1,
@@ -356,7 +355,7 @@ function checkFileScope(fs: FileScope, from: number): void {
       SCOPE_WORDS.has(w) ||
       ALL_TYPES.has(w) ||
       w === "FUNCTION" ||
-      (t.kind === "w" && labelOf(indexer, src.slice(t.start, t.end)))
+      (t.kind === "w" && labelOf(indexer, src.slice(t.start, t.end), fs.file))
     ) {
       return;
     }
@@ -447,7 +446,7 @@ function checkDims(
   fs: FileScope,
   j: number,
 ): { next: number; elements: number } {
-  const { T, to, push, indexer } = fs;
+  const { T, to, push, indexer, file } = fs;
   let elements = 1;
   let known = true;
   let count = 0;
@@ -457,7 +456,8 @@ function checkDims(
     if (++count === 5)
       push(open, open, "An array has at most 4 dimensions.", "E2031");
     const inner = T.slice(open + 1, close);
-    const size = inner.length === 1 ? intValue(inner[0], indexer) : undefined;
+    const size =
+      inner.length === 1 ? intValue(inner[0], indexer, file) : undefined;
     if (inner.length > 1) {
       push(
         open + 2,
@@ -465,11 +465,11 @@ function checkDims(
         "An array size is a single integer; write each dimension in its own brackets, e.g. [2][3].",
         "E2011",
       );
-    } else if (inner.length === 1 && labelTokens(inner[0], indexer) > 1) {
+    } else if (inner.length === 1 && labelTokens(inner[0], indexer, file) > 1) {
       push(
         open + 1,
         open + 1,
-        `An array size is a single integer ('${fs.src.slice(inner[0].start, inner[0].end)}' is ${shortExpr(indexer.getLabel(inner[0].text)!.expr)}).`,
+        `An array size is a single integer ('${fs.src.slice(inner[0].start, inner[0].end)}' is ${shortExpr(indexer.getLabel(inner[0].text, file)!.expr)}).`,
         "E2011",
       );
     }
@@ -490,19 +490,25 @@ function checkDims(
   return { next: j, elements: known ? elements : Number.MAX_SAFE_INTEGER };
 }
 
-/** Number of tokens a constant label expands to (0 for other tokens). */
-function labelTokens(t: Token, indexer: Indexer): number {
-  const e = t.kind === "w" ? indexer.getLabel(t.text)?.expr : undefined;
+/** Number of tokens a constant label of `file`'s compile expands to (0 for
+ *  other tokens). */
+function labelTokens(t: Token, indexer: Indexer, file: string): number {
+  const e = t.kind === "w" ? indexer.getLabel(t.text, file)?.expr : undefined;
   return e === undefined ? 0 : lexTokens(e).length;
 }
 
-/** Value of an integer literal token, or of a label expanding to one. */
-function intValue(t: Token, indexer: Indexer): number | undefined {
+/** Value of an integer literal token, or of a label of `file`'s compile
+ *  expanding to one. */
+function intValue(
+  t: Token,
+  indexer: Indexer,
+  file: string,
+): number | undefined {
   if (t.kind === "w") {
-    const e = indexer.getLabel(t.text)?.expr;
+    const e = indexer.getLabel(t.text, file)?.expr;
     const lt = e !== undefined ? lexTokens(e) : [];
     return lt.length === 1 && lt[0].kind === "n"
-      ? intValue(lt[0], indexer)
+      ? intValue(lt[0], indexer, file)
       : undefined;
   }
   return t.kind === "n" && isIntLiteral(t.text)
@@ -539,7 +545,7 @@ function checkValue(fs: FileScope, j: number, type: string): number {
   let via = "";
 
   if (isIdentifier(v)) {
-    const lab = labelOf(indexer, src.slice(v.start, v.end));
+    const lab = labelOf(indexer, src.slice(v.start, v.end), file);
     if (lab?.needsArgs) return j + 1;
     if (lab) {
       let toks = lexTokens(lab.expr);
@@ -573,10 +579,11 @@ function checkValue(fs: FileScope, j: number, type: string): number {
       }
       lit = toks[0];
     } else if (
-      !indexer.getVariables(v.text).length &&
-      !indexer.getFunction(v.text)
+      !unitsKnown(indexer, file) &&
+      !indexer.getVariables(v.text, file).length &&
+      !indexer.getFunctionFor(v.text, file)
     ) {
-      // Could be a label of a project outside the workspace.
+      // Could be a label of a project that is not known.
       severity = vscode.DiagnosticSeverity.Warning;
     }
   } else if (sign && (isToken(v, "-") || isToken(v, "+"))) {

@@ -55,36 +55,47 @@ export function makeSemanticTokens(indexer: Indexer): {
     ["global", "local", "parameter", "module", "readonly", "defaultLibrary"],
   );
 
-  // Call highlighting per nameKey, rebuilt after each reindex
-  let callKinds: Map<string, TokenKind> | null = null;
-
-  function getCallKinds(): Map<string, TokenKind> {
-    if (callKinds) return callKinds;
-    callKinds = new Map();
-    for (const [key, f] of indexer.getAllFunctions()) {
-      // A workspace copy of an AVEVA library file hides the documented entry
-      const lib =
-        f.origin === "cicode" ? indexer.getBuiltinFunction(key) : undefined;
-      const kind = callKind(
-        f,
-        isDocumented(f) || (lib?.origin === "cicode" && isDocumented(lib)),
-      );
-      if (kind) callKinds.set(key, kind);
-    }
-    return callKinds;
+  /** How a call to `f` (named `key`) in `file` is highlighted. */
+  function kindOf(
+    key: string,
+    f: FunctionInfo,
+    file: string,
+  ): TokenKind | undefined {
+    // A copy of an AVEVA library file hides the documented entry, where
+    // that library is compiled with the file
+    const lib =
+      f.origin === "cicode" ? indexer.getBuiltinFunction(key) : undefined;
+    return callKind(
+      f,
+      isDocumented(f) ||
+        (lib?.origin === "cicode" &&
+          isDocumented(lib) &&
+          (!lib.library || indexer.projects.hasLibrary(file, lib.library))),
+    );
   }
 
-  // Any label (constant or function-like), TRUE and FALSE included
-  const isLabel = (name: string) =>
-    indexer.isKnownLabel(name) || INCLUDE_BOOL_LABELS.has(upperAscii(name));
-  const isConstantLabel = (name: string) =>
-    !!indexer.getLabel(name) || INCLUDE_BOOL_LABELS.has(upperAscii(name));
+  // Call highlighting per nameKey of the functions a file's project sees
+  // (projects.visibleKey), rebuilt after each reindex
+  const callKinds = new Map<string, Map<string, TokenKind>>();
+
+  function getCallKinds(file: string): Map<string, TokenKind> {
+    const vk = indexer.projects.visibleKey(file);
+    let kinds = callKinds.get(vk);
+    if (kinds) return kinds;
+    kinds = new Map();
+    for (const [key, f] of indexer.getAllFunctions(file)) {
+      const kind = kindOf(key, f, file);
+      if (kind) kinds.set(key, kind);
+    }
+    callKinds.set(vk, kinds);
+    return kinds;
+  }
 
   // Notify VS Code to re-request tokens once the (debounced) reindex has
   // caught up, so highlighting built from stale ranges self-corrects.
   const _onDidChange = new vscode.EventEmitter<void>();
   const subscription = indexer.onIndexed(() => {
-    callKinds = null;
+    callKinds.clear();
     _onDidChange.fire();
   });
 
@@ -93,6 +104,15 @@ export function makeSemanticTokens(indexer: Indexer): {
     provideDocumentSemanticTokens(doc: vscode.TextDocument) {
       const builder = new vscode.SemanticTokensBuilder(legend);
       const text = doc.getText();
+      const file = doc.uri.fsPath;
+      // Any label (constant or function-like) of the file's compile, TRUE
+      // and FALSE included
+      const isLabel = (name: string) =>
+        indexer.isKnownLabel(name, file) ||
+        INCLUDE_BOOL_LABELS.has(upperAscii(name));
+      const isConstantLabel = (name: string) =>
+        !!indexer.getLabel(name, file) ||
+        INCLUDE_BOOL_LABELS.has(upperAscii(name));
       const push = (offset: number, length: number, kind: TokenKind) => {
         const pos = doc.positionAt(offset);
         builder.push(
@@ -104,15 +124,26 @@ export function makeSemanticTokens(indexer: Indexer): {
 
       // Use indexer data for function definitions (handles edge cases like comments after FUNCTION)
       const definitions = new Set<number>();
-      for (const f of indexer.getFunctionRanges(doc.uri.fsPath)) {
+      const ranges = indexer.getFunctionRanges(file);
+      for (const f of ranges) {
         builder.push(f.location.range, "function", []);
         definitions.add(doc.offsetAt(f.location.range.start));
       }
 
-      // Calls and label names, skipping comments and strings
-      const kinds = getCallKinds();
+      // Calls and label names, skipping comments and strings. A call of a
+      // function the file defines itself reaches that one (a PRIVATE one
+      // hides a built-in), not the one its project sees.
+      const kinds = getCallKinds(file);
+      const own = new Map<string, TokenKind | undefined>();
+      for (const r of ranges) {
+        const key = nameKey(r.name);
+        const f = indexer.getFunctionFor(r.name, file);
+        own.set(key, f && kindOf(key, f, file));
+      }
+      const kindFor = (key: string) =>
+        own.has(key) ? own.get(key) : kinds.get(key);
       const ignore =
-        indexer.getIgnoreSpans(doc.uri.fsPath) ??
+        indexer.getIgnoreSpans(file) ??
         buildIgnoreSpans(text, { includeFunctionHeaders: false });
       const calls = new Set<number>();
       CALL_RE.lastIndex = 0;
@@ -123,7 +154,7 @@ export function makeSemanticTokens(indexer: Indexer): {
         if (definitions.has(m.index) || inSpan(m.index, ignore)) continue;
         if (m.index > 0 && text[m.index - 1] === ".") continue;
         if (RESERVED_WORDS.has(upperAscii(name))) continue;
-        const kind = isLabel(name) ? LABEL_MACRO : kinds.get(nameKey(name));
+        const kind = isLabel(name) ? LABEL_MACRO : kindFor(nameKey(name));
         if (kind) push(m.index, name.length, kind);
       }
 
