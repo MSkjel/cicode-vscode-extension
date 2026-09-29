@@ -119,7 +119,7 @@
       "properties": {
         "cicode.explorer.expandFolders": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Expand folders by default in the Cicode Explorer."
         },
         "cicode.indexing.excludePatterns": {

@@ -40,6 +40,8 @@ export function makeSideBar() {
     vscode.workspace.onDidChangeWorkspaceFolders(sync),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("cicode.indexing.excludePatterns")) sync();
+      else if (e.affectsConfiguration("cicode.explorer.expandFolders"))
+        provider.refresh();
     }),
   );
   sync();
@@ -56,6 +58,9 @@ class CicodeExplorerItem extends vscode.TreeItem {
   ) {
     super(label, collapsibleState);
     this.contextValue = isFile ? "file" : "folder";
+    // The id carries a folder's default state, so a changed
+    // cicode.explorer.expandFolders applies instead of the remembered state.
+    if (resourceUri) this.id = `${collapsibleState}:${resourceUri.fsPath}`;
     if (resourceUri && isFile) {
       this.resourceUri = resourceUri;
       this.command = {
@@ -103,7 +108,7 @@ class CicodeExplorerProvider implements vscode.TreeDataProvider<CicodeExplorerIt
       if (folders.length === 1) {
         return this.readDirectory(folders[0].uri.fsPath, ciDirs);
       }
-      const folderState = cfg().get("cicode.explorer.expandFolders", true)
+      const folderState = cfg().get("cicode.explorer.expandFolders", false)
         ? vscode.TreeItemCollapsibleState.Expanded
         : vscode.TreeItemCollapsibleState.Collapsed;
       return folders
@@ -164,7 +169,7 @@ class CicodeExplorerProvider implements vscode.TreeDataProvider<CicodeExplorerIt
           new CicodeExplorerItem(
             path.basename(fullPath),
             isDir
-              ? cfg().get("cicode.explorer.expandFolders", true)
+              ? cfg().get("cicode.explorer.expandFolders", false)
                 ? vscode.TreeItemCollapsibleState.Expanded
                 : vscode.TreeItemCollapsibleState.Collapsed
               : vscode.TreeItemCollapsibleState.None,
