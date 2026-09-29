@@ -49,17 +49,36 @@ export function readDbfHeader(buf: Buffer): DbfHeader | null {
  * uppercased for consistency.
  */
 export function parseDbf(filePath: string): Record<string, string>[] {
+  return readRecords(filePath, false) ?? [];
+}
+
+/** Like parseDbf, but undefined when the file cannot be read or is cut
+ *  short (e.g. while it is being rewritten), so a caller can keep what it
+ *  read before. */
+export function readDbfStrict(
+  filePath: string,
+): Record<string, string>[] | undefined {
+  return readRecords(filePath, true);
+}
+
+function readRecords(
+  filePath: string,
+  strict: boolean,
+): Record<string, string>[] | undefined {
   let buf: Buffer;
   try {
     buf = fs.readFileSync(filePath);
   } catch {
-    return [];
+    return undefined;
   }
 
   const header = readDbfHeader(buf);
-  if (!header) return [];
+  if (!header) return strict ? undefined : [];
 
   const { recordCount, headerSize, recordSize, fields } = header;
+  if (strict && headerSize + recordCount * recordSize > buf.length) {
+    return undefined;
+  }
 
   // Compute byte offset of each field within a record (byte 0 = deletion flag)
   const offsets: number[] = [];

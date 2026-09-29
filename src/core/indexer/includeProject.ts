@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { parseDbf } from "./dbfReader";
 
-function isDir(p: string): boolean {
+export function isDir(p: string): boolean {
   try {
     return fs.statSync(p).isDirectory();
   } catch {
@@ -10,7 +10,7 @@ function isDir(p: string): boolean {
   }
 }
 
-function readDir(dir: string): string[] {
+export function readDir(dir: string): string[] {
   try {
     return fs.readdirSync(dir);
   } catch {
@@ -64,11 +64,11 @@ function projectFromMaster(userDir: string, name: string): string | undefined {
   return undefined;
 }
 
-/** User folders (holding MASTER.DBF) at or above `dir`. */
-function userDirsAbove(dir: string): string[] {
+/** User folders (holding MASTER.DBF) at or above `dir`, nearest first. */
+export function userDirsAbove(dir: string, max = Infinity): string[] {
   const out: string[] = [];
   let d = path.resolve(dir);
-  for (let depth = 0; depth < 12; depth++) {
+  for (let depth = 0; depth < 12 && out.length < max; depth++) {
     if (findFileInDir(d, "MASTER.DBF")) out.push(d);
     const parent = path.dirname(d);
     if (parent === d) break;
@@ -172,4 +172,32 @@ function locate(opts: IncludeLookup): string | undefined {
     if (hit) return hit;
   }
   return undefined;
+}
+
+/**
+ * Folders that may hold a MASTER.DBF or an Include project, in search
+ * order: the User folders at or above `near`, then the `cicode.avevaPath`
+ * setting (itself and its User subfolder), then the installed versions'
+ * User folders (the one belonging to avevaPath first). Existing folders
+ * only, each once; never throws.
+ */
+export function candidateUserDirs(
+  near: readonly string[],
+  avevaPath?: string,
+): string[] {
+  const dirs: string[] = [];
+  try {
+    for (const d of near) dirs.push(...userDirsAbove(d));
+    if (avevaPath) dirs.push(avevaPath, path.join(avevaPath, "User"));
+    dirs.push(...installedUserDirs(avevaPath));
+  } catch {
+    /* keep what was found */
+  }
+  const seen = new Set<string>();
+  return dirs.filter((u) => {
+    const key = path.resolve(u).toLowerCase();
+    if (seen.has(key) || !isDir(u)) return false;
+    seen.add(key);
+    return true;
+  });
 }
