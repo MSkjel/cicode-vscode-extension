@@ -44,9 +44,19 @@ export function makeNavProviders(
         if (!w) return null;
         // A constant label has no definition in the code
         const r = resolveNameAt(indexer, document, position, w);
-        if (r?.kind === "function") return r.fn.location;
         if (r?.kind === "variable") return r.v.location;
-        return null;
+        if (r?.kind !== "function") return null;
+        const file = document.uri.fsPath;
+        if (r.fn.origin !== "cicode" || r.fn.file === file)
+          return r.fn.location;
+        // A file compiled in several units may reach another PUBLIC
+        // definition in each (clashing ones in one unit are listed too).
+        const locs = indexer
+          .getFunctionCandidatesFor(w, file)
+          .flatMap((f) =>
+            f.origin === "cicode" && f.location ? [f.location] : [],
+          );
+        return locs.length > 1 ? locs : r.fn.location;
       },
     }),
 
@@ -55,11 +65,21 @@ export function makeNavProviders(
         const w = nameAt(document, position)?.name;
         if (!w) return null;
 
+        // The project of a definition compiled in from another project
+        const g = indexer.projects;
+        const projectNote = (defFile: string | null) =>
+          defFile &&
+          g.projectOf(defFile).key !== g.projectOf(document.uri.fsPath).key
+            ? `Defined in project **${g.projectName(defFile)}**.`
+            : "";
+
         const r = resolveNameAt(indexer, document, position, w);
         if (r?.kind === "label") {
           const label = r.label;
           let md = "```cicode\n" + `${label.name} = ${label.expr}` + "\n```";
           if (label.comment) md += `\n\n${label.comment}`;
+          const from = projectNote(label.file);
+          if (from) md += `\n\n${from}`;
           if (
             indexer.getFunctionFor(w, document.uri.fsPath) ||
             indexer.resolveVariableAt(document, position, w)
@@ -77,13 +97,18 @@ export function makeNavProviders(
           if (entry.doc) md += `\n\n${entry.doc}`;
           if (entry.returns) md += `\n\n**Returns:** ${entry.returns}`;
 
+          const from = projectNote(entry.file);
+          if (from) md += `\n\n${from}`;
+
           const showLink = vscode.workspace
             .getConfiguration("cicode")
             .get<boolean>("hover.showHelpLink", true);
           const hasHelp = entry.helpId || entry.helpPath;
           if (showLink && hasHelp) {
+            // The file too, so the command resolves the same definition
+            const args = [entry.name, document.uri.fsPath];
             const cmdUri = vscode.Uri.parse(
-              `command:cicode.openHelpForSymbol?${encodeURIComponent(JSON.stringify(entry.name))}`,
+              `command:cicode.openHelpForSymbol?${encodeURIComponent(JSON.stringify(args))}`,
             );
             md += `\n\n[Open full help](${cmdUri})`;
           }
@@ -98,6 +123,8 @@ export function makeNavProviders(
           const scope = formatScopeType(v.scopeType, { scopeId: v.scopeId });
           let md = "```cicode\n" + `${v.type} ${v.name} // ${scope}` + "\n```";
           if (v.doc) md += `\n\n${v.doc}`;
+          const from = v.scopeType === "global" && projectNote(v.file);
+          if (from) md += `\n\n${from}`;
           if (r.hides) {
             md += `\n\nThis variable hides the function \`${r.hides.name}\`: \`${v.name}(...)\` here does not call it.`;
           }
