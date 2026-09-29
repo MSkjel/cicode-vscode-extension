@@ -1757,16 +1757,15 @@ export class Indexer {
     );
     if (mod) return mod;
 
-    // A compile holds one GLOBAL of a name: prefer the one in this file's
-    // project folder, then the Include project's.
-    const globals = candidates.filter((v) => v.scopeType === "global");
-    const dir = path.dirname(file).toLowerCase();
-    const folder = (v: VariableEntry) => path.dirname(v.file).toLowerCase();
+    // A GLOBAL variable or locvar tag of a project compiled with the file:
+    // its own project's first, then Include's, then unit order.
     return (
-      globals.find((v) => folder(v) === dir) ??
-      globals.find((v) => path.basename(folder(v)) === "include") ??
-      globals[0] ??
-      null
+      this._best(
+        candidates,
+        (v) => v.file,
+        this._graph.visible(file),
+        (v) => v.scopeType === "global",
+      ) ?? null
     );
   }
 
