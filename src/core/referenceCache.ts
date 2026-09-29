@@ -297,9 +297,11 @@ export class ReferenceCache implements vscode.Disposable {
     // would insert bogus references; only the symbol diff above matters.
     // Also skip files the indexer no longer knows (deleted, or renamed
     // away): their TextDocument may linger and would re-add references.
+    // Files of projects outside the workspace are never scanned.
     if (
       changedFile.toLowerCase().endsWith(".ci") &&
-      this.indexer.getIgnoreSpans(changedFile) !== undefined
+      this.indexer.getIgnoreSpans(changedFile) !== undefined &&
+      !this.indexer.isExternal(changedFile)
     ) {
       try {
         const uri = vscode.Uri.file(changedFile);

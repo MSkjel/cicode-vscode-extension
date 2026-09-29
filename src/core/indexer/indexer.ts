@@ -1,6 +1,9 @@
+import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import {
+  debounce,
+  type Debounced,
   debouncePerKey,
   error,
   type PerKeyDebounced,
@@ -19,8 +22,10 @@ import {
 } from "../../shared/textUtils";
 import {
   CI_FILE_GLOB,
+  INCLUDE_DBF_GLOB,
   LABELS_DBF_GLOB,
   LOCVAR_DBF_GLOB,
+  MASTER_DBF_PATTERN,
 } from "../../shared/globs";
 import { getBuiltins } from "../builtins/builtins";
 import type { FunctionInfo, VariableEntry } from "../../shared/types";
@@ -28,7 +33,14 @@ import type { FunctionRange } from "./types";
 import { parseLabelsDbf, type LabelRecord } from "./labelsReader";
 import { parseLocvarDbf } from "./localVarsParser";
 import { blankComments, parseCicode, type ParsedFunction } from "./parser";
-import { locateIncludeLabels } from "./includeProject";
+import {
+  buildProjectGraph,
+  type GraphBuild,
+  ProjectGraph,
+  type ProjectInfo,
+  projectKey,
+} from "./projectGraph";
+import { isDir } from "./includeProject";
 import { findOpenDocument, isIndexableUri, readSourceText } from "./sourceText";
 import { findWorkspaceFiles } from "../../config";
 
@@ -99,6 +111,36 @@ function sourceKind(p: string): SourceKind | undefined {
   if (base === "labels.dbf") return "labels";
   if (base === "locvar.dbf") return "locvar";
   return undefined;
+}
+
+const isIncludeDbf = (p: string) =>
+  path.basename(p).toLowerCase() === "include.dbf";
+
+// Windows paths ignore case: one file reached by two spellings is one file.
+const foldCase = process.platform === "win32";
+
+/** A folder as the file system spells it (MASTER.DBF's PATH may differ in
+ *  case), so its files get the paths an opened file has. A junction or
+ *  link keeps the path it was reached by. */
+function diskSpelling(folder: string): string {
+  try {
+    const real = fs.realpathSync.native(folder);
+    if (real.toLowerCase() === path.resolve(folder).toLowerCase()) return real;
+  } catch {
+    /* gone */
+  }
+  return folder;
+}
+
+// A graph refresh that finds a table cut short reads again this often
+// before it takes what it can read.
+const REFRESH_RETRIES = 5;
+
+/** Source files of the workspace, or of the out-of-workspace projects. */
+interface Sources {
+  ci: string[];
+  labels: string[];
+  locvar: string[];
 }
 
 /** FNV-1a 32-bit hash: cheap content fingerprint for skip-if-unchanged. */
@@ -185,11 +227,40 @@ function removeDef<T>(defs: DefsByKey<T>, key: string, file: string) {
   if (m?.delete(file) && m.size === 0) defs.delete(key);
 }
 
+/** Same definition, also across the copies scoped lookups hand out (a
+ *  library function with its shipped help merged in): same file, name and
+ *  origin. */
+export function sameDefinition(
+  a: FunctionInfo | undefined,
+  b: FunctionInfo | undefined,
+): boolean {
+  if (a === b) return true;
+  return (
+    !!a &&
+    !!b &&
+    a.file === b.file &&
+    a.origin === b.origin &&
+    nameKey(a.name) === nameKey(b.name)
+  );
+}
+
+/** Resolved names for the files of one project, built on demand. */
+interface ScopeView {
+  functions?: Map<string, FunctionInfo>;
+  labels?: Map<string, LabelRecord>;
+  /** Keys of every label, constant or function-like. */
+  labelKeys?: Set<string>;
+  globals?: VariableEntry[];
+}
+
 /**
  * Indexes Cicode files, labels.DBF and locvar.DBF tables: function
  * definitions, variable declarations and labels, with their locations.
  * Every map is keyed by nameKey: names ignore the case of ASCII letters
- * only, as the compiler does.
+ * only, as the compiler does. Definitions are stored per source file; a
+ * lookup sees those of the projects compiled together with the asking file
+ * (see ProjectGraph), including projects outside the workspace, which are
+ * read from disk.
  */
 export class Indexer {
   private readonly builtinFunctions = new Map<string, FunctionInfo>();
@@ -201,8 +272,10 @@ export class Indexer {
   private readonly _macroView = new Map<string, FunctionInfo>();
   readonly labelCache = new Map<string, LabelRecord>(); // constant labels
   private _mergedFunctions: Map<string, FunctionInfo> | null = null;
+  // Per-project resolved views (visibleKey -> names), dropped on any change.
+  private readonly _views = new Map<string, ScopeView>();
 
-  readonly variableCache = new Map<string, VariableEntry[]>();
+  private readonly variableCache = new Map<string, VariableEntry[]>();
   private readonly functionRangesByFile = new Map<string, FunctionRange[]>();
   private readonly _ignoreSpansByFile = new Map<string, FileIgnoreSpans>();
 
@@ -210,6 +283,10 @@ export class Indexer {
   private readonly _functionKeysByFile = new Map<string, Set<string>>();
   private readonly _variableKeysByFile = new Map<string, Set<string>>();
   private readonly _labelKeysByFile = new Map<string, Set<string>>();
+  // Indexed source files per folder (projectKey of the folder).
+  private readonly _filesByFolder = new Map<string, Set<string>>();
+  // Indexed source files by lower-case path (foldCase only).
+  private readonly _fileByLowerPath = new Map<string, string>();
 
   // Content fingerprint of the last indexed text per file. Opening a document
   // (e.g. diagnostics iterating the workspace) fires onDidOpenTextDocument;
@@ -219,18 +296,30 @@ export class Indexer {
 
   // labels.DBF tables read from outside the workspace (the Include project).
   private _externalLabelFiles: string[] = [];
-  private _externalWatchers: vscode.Disposable[] = [];
+  private _graph = ProjectGraph.empty();
+  // Out-of-workspace projects being indexed (external and loose ones):
+  // project key -> watchers.
+  private readonly _external = new Map<string, vscode.Disposable[]>();
+  // Folders of .ci files opened from outside the workspace (projectKey ->
+  // folder): indexed with the projects they compile with.
+  private readonly _loose = new Map<string, string>();
+  private _masterWatchers: vscode.Disposable[] = [];
+  private _masterWatchKey = "";
+  private _refreshRetries = 0;
 
   private readonly _onIndexed = new vscode.EventEmitter<string | undefined>();
   /** Fires after indexing completes. Carries the source file path for
    *  single-file reindex (a .ci file, or a labels.DBF/locvar.DBF path),
-   *  undefined for full rebuild. */
+   *  undefined for full rebuild and for project graph changes. */
   readonly onIndexed = this._onIndexed.event;
 
-  private _bulkIndexing = false;
   // Monotonic version counter so a superseded buildAll can bail out instead
   // of racing a newer build (duplicating locvar entries, corrupting flags).
   private _buildVersion = 0;
+  // Same for project graph refreshes, which also yield to any buildAll.
+  private _graphVersion = 0;
+  private _building = false;
+  private _graphStale = false;
 
   private readonly _debouncedIndex: PerKeyDebounced<
     (doc: vscode.TextDocument) => void
@@ -244,6 +333,8 @@ export class Indexer {
   private readonly _debouncedSyncFromDisk: PerKeyDebounced<
     (filePath: string) => void
   >;
+  private readonly _debouncedRefreshProjects: Debounced<() => void>;
+  private readonly _debouncedBuildAll: Debounced<() => void>;
 
   constructor(
     context: vscode.ExtensionContext,
@@ -255,6 +346,9 @@ export class Indexer {
         // was deleted or renamed since; indexing it would resurrect the dead
         // path. Closed files are re-read from disk by the .ci watcher instead.
         if (doc.isClosed) return;
+        // Its folder may have left the out-of-workspace set since the edit:
+        // it becomes a loose project instead of an orphan.
+        this._noteLoose(doc.uri);
         void this._indexFile(doc).catch((e) =>
           error("index fail", doc.uri.fsPath, e),
         );
@@ -279,61 +373,112 @@ export class Indexer {
       500,
       (p) => p,
     );
+    // include.DBF and MASTER.DBF are rewritten in bursts (Studio, compiles).
+    this._debouncedRefreshProjects = debounce(() => {
+      void this._refreshProjects().catch((e) =>
+        error("project graph refresh failed", e),
+      );
+    }, 1000);
+    this._debouncedBuildAll = debounce(() => {
+      void this.buildAll().catch((e) => error("index rebuild failed", e));
+    }, 1000);
 
     const labelsWatcher =
       vscode.workspace.createFileSystemWatcher(LABELS_DBF_GLOB);
     const locvarWatcher =
       vscode.workspace.createFileSystemWatcher(LOCVAR_DBF_GLOB);
+    const includeWatcher =
+      vscode.workspace.createFileSystemWatcher(INCLUDE_DBF_GLOB);
     // .ci files edited outside VS Code (AVEVA editors, git, Explorer) never
     // raise TextDocument events for unopened files.
     const ciWatcher = vscode.workspace.createFileSystemWatcher(CI_FILE_GLOB);
+    // A source appearing in or leaving a folder may add or drop a project.
+    const andProjects = (reindex: (p: string) => void) => (uri: vscode.Uri) => {
+      reindex(uri.fsPath);
+      this._debouncedRefreshProjects();
+    };
+    const refreshProjects = () => this._debouncedRefreshProjects();
     context.subscriptions.push(
       ciWatcher,
       ciWatcher.onDidChange((uri) => this._debouncedSyncFromDisk(uri.fsPath)),
-      ciWatcher.onDidCreate((uri) => this._debouncedSyncFromDisk(uri.fsPath)),
-      ciWatcher.onDidDelete((uri) => this._debouncedSyncFromDisk(uri.fsPath)),
+      ciWatcher.onDidCreate(andProjects(this._debouncedSyncFromDisk)),
+      ciWatcher.onDidDelete(andProjects(this._debouncedSyncFromDisk)),
       labelsWatcher,
       labelsWatcher.onDidChange((uri) =>
         this._debouncedReindexLabels(uri.fsPath),
       ),
-      labelsWatcher.onDidCreate((uri) =>
-        this._debouncedReindexLabels(uri.fsPath),
-      ),
-      labelsWatcher.onDidDelete((uri) =>
-        this._debouncedReindexLabels(uri.fsPath),
-      ),
+      labelsWatcher.onDidCreate(andProjects(this._debouncedReindexLabels)),
+      labelsWatcher.onDidDelete(andProjects(this._debouncedReindexLabels)),
       locvarWatcher,
       locvarWatcher.onDidChange((uri) =>
         this._debouncedReindexLocvar(uri.fsPath),
       ),
-      locvarWatcher.onDidCreate((uri) =>
-        this._debouncedReindexLocvar(uri.fsPath),
-      ),
-      locvarWatcher.onDidDelete((uri) =>
-        this._debouncedReindexLocvar(uri.fsPath),
-      ),
+      locvarWatcher.onDidCreate(andProjects(this._debouncedReindexLocvar)),
+      locvarWatcher.onDidDelete(andProjects(this._debouncedReindexLocvar)),
+      includeWatcher,
+      includeWatcher.onDidChange(refreshProjects),
+      includeWatcher.onDidCreate(refreshProjects),
+      includeWatcher.onDidDelete(refreshProjects),
       vscode.workspace.onDidSaveTextDocument((d) => this._maybeIndex(d)),
       vscode.workspace.onDidOpenTextDocument((d) => this._maybeIndex(d)),
       vscode.workspace.onDidChangeTextDocument((e) =>
         this._maybeIndex(e.document),
       ),
-      vscode.workspace.onDidDeleteFiles((e) =>
-        e.files.forEach((f) => this._purgePath(f.fsPath)),
-      ),
-      vscode.workspace.onDidRenameFiles((e) =>
+      vscode.workspace.onDidDeleteFiles((e) => {
+        e.files.forEach((f) => this._purgePath(f.fsPath));
+        this._debouncedRefreshProjects();
+      }),
+      vscode.workspace.onDidRenameFiles((e) => {
         e.files.forEach(({ oldUri, newUri }) =>
           this._movePath(oldUri.fsPath, newUri.fsPath),
-        ),
+        );
+        this._debouncedRefreshProjects();
+      }),
+      // New or removed folders bring or take whole workspace projects.
+      vscode.workspace.onDidChangeWorkspaceFolders(() =>
+        this._debouncedBuildAll(),
       ),
       // extension.ts rebuilds the index when cicode.indexing.includeProjectPath
-      // or cicode.avevaPath (both steer the Include lookup) changes.
-      { dispose: () => this._disposeExternalWatchers() },
+      // or cicode.avevaPath (both steer the MASTER.DBF and Include lookup)
+      // changes.
+      { dispose: () => this._disposeProjectWatchers() },
     );
   }
 
-  /** Build the index for all workspace sources. */
+  /** The projects and compile units the lookups are scoped by. */
+  get projects(): ProjectGraph {
+    return this._graph;
+  }
+
+  /** A file of a project outside the workspace, indexed read-only from
+   *  disk (never diagnosed, renamed or scanned for references). */
+  isExternal(file: string): boolean {
+    return this._graph.isExternal(file);
+  }
+
+  /** Build the index for all workspace sources and the projects outside
+   *  the workspace that are compiled together with them. */
   async buildAll(): Promise<void> {
     const version = ++this._buildVersion;
+    this._building = true;
+    try {
+      await this._buildAll(version);
+    } finally {
+      if (version === this._buildVersion) {
+        this._building = false;
+        if (this._graphStale) {
+          this._graphStale = false;
+          this._debouncedRefreshProjects();
+        }
+      }
+    }
+  }
+
+  private async _buildAll(version: number): Promise<void> {
+    this._debouncedBuildAll.cancel();
+    // This build reads every table: a refresh asked for before is moot.
+    this._debouncedRefreshProjects.cancel();
+    this._refreshRetries = 0;
     this.builtinFunctions.clear();
     this._ciDefs.clear();
     this._macroDefs.clear();
@@ -342,11 +487,14 @@ export class Indexer {
     this._macroView.clear();
     this.labelCache.clear();
     this._mergedFunctions = null;
+    this._views.clear();
     this.variableCache.clear();
     this.functionRangesByFile.clear();
     this._functionKeysByFile.clear();
     this._variableKeysByFile.clear();
     this._labelKeysByFile.clear();
+    this._filesByFolder.clear();
+    this._fileByLowerPath.clear();
     this._ignoreSpansByFile.clear();
     this._indexedTextHash.clear();
 
@@ -359,102 +507,375 @@ export class Indexer {
       });
     }
 
-    // Labels first: the compiler expands them before anything else.
-    const labelFiles = await findWorkspaceFiles(LABELS_DBF_GLOB, this.cfg);
-    if (version !== this._buildVersion) return; // superseded by a newer buildAll
-    const external = this._findExternalLabels(labelFiles);
-    for (const f of [...labelFiles.map((u) => u.fsPath), ...external]) {
-      this._indexLabels(f);
+    // Superseded by a newer buildAll.
+    const superseded = () => version !== this._buildVersion;
+    const ws = await this._findWorkspaceSources();
+    if (superseded()) return;
+    const explicit = this._includeSetting();
+    if (
+      explicit &&
+      !isDir(/\.dbf$/i.test(explicit) ? path.dirname(explicit) : explicit)
+    ) {
+      warn("no folder at cicode.indexing.includeProjectPath", explicit);
     }
-    this._watchExternalLabels(external);
+    this._seedLoose();
+    // The first graph is kept even when a table was being rewritten (its
+    // units count as incomplete); a refresh reads it again after the build,
+    // since tables outside the workspace are not all watched.
+    const built = this._buildGraph(ws.folders, ws.partial);
+    if (!built.ok) this._graphStale = true;
+    this._setGraph(built.graph);
+    for (const k of [...this._external.keys()]) this._unwatchExternal(k);
+    const ext = await this._externalSources(this._diskFolders(), superseded);
+    if (superseded()) return;
 
-    const files = await findWorkspaceFiles(CI_FILE_GLOB, this.cfg);
-    if (version !== this._buildVersion) return;
-    this._bulkIndexing = true;
-    for (const file of files) {
-      try {
-        await this._indexPath(file);
-      } catch (e) {
-        error("index fail", file.fsPath, e);
-      }
-      // Superseded: the newer build owns the caches and the bulk flag.
-      if (version !== this._buildVersion) return;
-    }
-    this._bulkIndexing = false;
-
-    const locvarFiles = await findWorkspaceFiles(LOCVAR_DBF_GLOB, this.cfg);
-    if (version !== this._buildVersion) return;
-    for (const file of locvarFiles) {
-      this._indexLocvar(file.fsPath);
-    }
-
+    const done = await this._indexSources(
+      {
+        ci: [...ws.ci, ...ext.ci],
+        labels: [...ws.labels, ...ext.labels],
+        locvar: [...ws.locvar, ...ext.locvar],
+      },
+      superseded,
+    );
+    if (!done) return;
     this._onIndexed.fire(undefined);
+    this._fireLoose();
+  }
+
+  /** Index sources, labels first (the compiler expands them before anything
+   *  else); false when superseded midway. Files `wanted` rejects by then
+   *  are skipped. */
+  private async _indexSources(
+    src: Sources,
+    superseded: () => boolean,
+    wanted: (file: string) => boolean = () => true,
+  ): Promise<boolean> {
+    for (const f of src.labels) if (wanted(f)) this._indexLabels(f);
+    for (const file of src.ci) {
+      if (!wanted(file)) continue;
+      try {
+        await this._indexPath(vscode.Uri.file(file), true);
+      } catch (e) {
+        error("index fail", file, e);
+      }
+      // Superseded: the newer build owns the caches.
+      if (superseded()) return false;
+    }
+    for (const f of src.locvar) if (wanted(f)) this._indexLocvar(f);
+    return true;
+  }
+
+  /** Workspace sources, the folders holding them (include.DBF too), and
+   *  the folders of .ci files excludePatterns hides. */
+  private async _findWorkspaceSources(): Promise<
+    Sources & { folders: string[]; partial: string[] }
+  > {
+    const hidden: vscode.Uri[] = [];
+    const [ci, labels, locvar, include] = await Promise.all(
+      [CI_FILE_GLOB, LABELS_DBF_GLOB, LOCVAR_DBF_GLOB, INCLUDE_DBF_GLOB].map(
+        async (g) =>
+          (
+            await findWorkspaceFiles(
+              g,
+              this.cfg,
+              g === CI_FILE_GLOB ? hidden : undefined,
+            )
+          ).map((u) => u.fsPath),
+      ),
+    );
+    const folders = new Set<string>();
+    for (const f of [...ci, ...labels, ...locvar, ...include]) {
+      folders.add(path.dirname(f));
+    }
+    const partial = [...new Set(hidden.map((u) => path.dirname(u.fsPath)))];
+    return { ci, labels, locvar, folders: [...folders], partial };
+  }
+
+  private _includeSetting(): string | undefined {
+    return (
+      this.cfg()
+        .get<string>("cicode.indexing.includeProjectPath", "")
+        ?.trim() || undefined
+    );
+  }
+
+  private _buildGraph(
+    sourceFolders: string[],
+    partialFolders: string[],
+  ): GraphBuild {
+    return buildProjectGraph({
+      workspaceFolders: (vscode.workspace.workspaceFolders ?? [])
+        .filter((f) => f.uri.scheme === "file")
+        .map((f) => f.uri.fsPath),
+      sourceFolders,
+      partialFolders,
+      looseFolders: [...this._loose.values()],
+      includeProjectPath: this._includeSetting(),
+      avevaPath:
+        this.cfg().get<string>("cicode.avevaPath", "")?.trim() || undefined,
+    });
+  }
+
+  private _setGraph(graph: ProjectGraph): void {
+    this._graph = graph;
+    this._views.clear();
+    this._watchMasters();
+  }
+
+  /** Projects read from disk: the external ones and the loose ones. */
+  private _diskFolders(): ProjectInfo[] {
+    return [...this._graph.externalFolders(), ...this._graph.looseProjects()];
+  }
+
+  /** Folders of the .ci documents open now (the graph ignores those of the
+   *  workspace); folders whose files were closed since are dropped. */
+  private _seedLoose(): void {
+    this._loose.clear();
+    for (const d of vscode.workspace.textDocuments) {
+      if (d.uri.scheme !== "file" || sourceKind(d.uri.fsPath) !== "ci") {
+        continue;
+      }
+      const dir = path.dirname(d.uri.fsPath);
+      this._loose.set(projectKey(dir), dir);
+    }
+  }
+
+  /** A .ci file opened from outside the workspace brings its project and
+   *  the projects compiled with it (graph refresh). */
+  private _noteLoose(uri: vscode.Uri): void {
+    if (uri.scheme !== "file") return;
+    const dir = path.dirname(uri.fsPath);
+    const key = projectKey(dir);
+    if (this._loose.has(key) || this._external.has(key)) return;
+    if (this._graph.projectOf(uri.fsPath).inWorkspace) return;
+    this._loose.set(key, dir);
+    this._debouncedRefreshProjects();
+  }
+
+  /** Announce the open files of loose projects one by one: onIndexed
+   *  (undefined) consumers go over the workspace only. */
+  private _fireLoose(): void {
+    const loose = new Set(this._graph.looseProjects().map((p) => p.key));
+    if (!loose.size) return;
+    for (const d of vscode.workspace.textDocuments) {
+      const f = d.uri.fsPath;
+      if (
+        d.uri.scheme === "file" &&
+        this._indexedTextHash.has(f) &&
+        loose.has(this._graph.visibleKey(f))
+      ) {
+        this._onIndexed.fire(f);
+      }
+    }
   }
 
   /**
-   * The compiler always compiles the Include project in, so its labels are
-   * active in every project. When the workspace does not contain it, read
-   * its labels.DBF from the Plant SCADA User folder.
+   * Rebuild the project graph after include.DBF, MASTER.DBF, project folder
+   * or loose file changes. A table cut short is read again a few times, as
+   * tables outside the workspace are not all watched, then taken as read
+   * (its units incomplete), unless it is a MASTER.DBF: the previous graph
+   * stays. A changed graph replaces the previous one, the projects that
+   * joined the out-of-workspace set are indexed and those that left it
+   * dropped. onIndexed(undefined) fires once when what the workspace
+   * compiles with changed; other registrations (a probe rig's) swap the
+   * graph silently. The open files of loose projects are announced.
    */
-  private _findExternalLabels(workspaceLabels: vscode.Uri[]): string[] {
-    const inWorkspace = workspaceLabels.some(
-      (u) => path.basename(path.dirname(u.fsPath)).toLowerCase() === "include",
-    );
-    if (inWorkspace) return [];
-    const c = this.cfg();
-    const explicit =
-      c.get<string>("cicode.indexing.includeProjectPath", "")?.trim() ||
-      undefined;
-    const file = locateIncludeLabels({
-      explicit,
-      near: (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
-      avevaPath: c.get<string>("cicode.avevaPath", "")?.trim() || undefined,
-    });
-    if (!file) {
-      if (explicit)
-        warn("no labels.DBF at cicode.indexing.includeProjectPath", explicit);
-      return [];
+  private async _refreshProjects(): Promise<void> {
+    this._debouncedRefreshProjects.cancel(); // covered by this one
+    if (this._building) {
+      this._graphStale = true; // buildAll reschedules when done
+      return;
     }
-    const key = path.resolve(file).toLowerCase();
-    return workspaceLabels.some(
-      (u) => path.resolve(u.fsPath).toLowerCase() === key,
-    )
-      ? []
-      : [file];
+    const version = this._buildVersion;
+    const graphVersion = ++this._graphVersion;
+    const superseded = () =>
+      version !== this._buildVersion || graphVersion !== this._graphVersion;
+
+    const ws = await this._findWorkspaceSources();
+    if (superseded()) return;
+    const built = this._buildGraph(ws.folders, ws.partial);
+    if (built.ok) {
+      this._refreshRetries = 0;
+    } else if (++this._refreshRetries < REFRESH_RETRIES) {
+      this._debouncedRefreshProjects();
+      return;
+    } else {
+      this._refreshRetries = 0;
+      if (!built.mastersOk) return;
+    }
+    let any = built.graph.signature !== this._graph.signature;
+    let all =
+      any && built.graph.workspaceSignature !== this._graph.workspaceSignature;
+    const implicit =
+      any && built.graph.implicitSignature !== this._graph.implicitSignature;
+    if (any) this._setGraph(built.graph);
+    // Folders join or leave under the same graph only after an unforeseen
+    // interruption: announce everything then.
+    const same = !any;
+
+    const now = new Map(this._diskFolders().map((p) => [p.key, p]));
+    for (const key of [...this._external.keys()]) {
+      if (now.has(key)) continue;
+      any = true;
+      all ||= same;
+      this._unwatchExternal(key);
+      // A folder that became a workspace project keeps its files.
+      if (this._graph.project(key)?.inWorkspace) continue;
+      for (const f of [...(this._filesByFolder.get(key) ?? [])]) {
+        this._purgeFile(f, false);
+      }
+    }
+    const joined = [...now.values()].filter((p) => !this._external.has(p.key));
+    if (joined.length) {
+      any = true;
+      all ||= same;
+      // Finished even when a newer refresh starts, which sees these folders
+      // as joined already; only a buildAll takes over.
+      const rebuilt = () => version !== this._buildVersion;
+      const ext = await this._externalSources(joined, rebuilt);
+      const done =
+        !rebuilt() &&
+        (await this._indexSources(ext, rebuilt, (f) =>
+          this._external.has(projectKey(path.dirname(f))),
+        ));
+      if (!done) return;
+    }
+    if (all) {
+      this._onIndexed.fire(undefined);
+    } else if (implicit) {
+      // Include or System in the workspace sees every unit: only what
+      // their own files see changed.
+      for (const p of this._graph.projects) {
+        if (!p.inWorkspace || !this._graph.isImplicit(p.key)) continue;
+        for (const f of this.projectSourceFiles(p.key)) {
+          this._onIndexed.fire(f);
+        }
+      }
+    }
+    if (any) this._fireLoose();
   }
 
-  private _watchExternalLabels(files: string[]): void {
-    this._disposeExternalWatchers();
-    this._externalLabelFiles = files;
-    for (const f of files) {
+  /** Watch and list the sources of out-of-workspace projects, until
+   *  `superseded`. The compiler reads only a project's own folder, so
+   *  subfolders are skipped. */
+  private async _externalSources(
+    projects: readonly { key: string; folder: string }[],
+    superseded: () => boolean,
+  ): Promise<Sources> {
+    const out: Sources = { ci: [], labels: [], locvar: [] };
+    for (const p of projects) {
+      if (superseded()) break;
+      // A newer graph (an overlapping refresh) may have dropped it.
+      if (!this._diskFolders().some((d) => d.key === p.key)) continue;
+      const folder = diskSpelling(p.folder);
+      const watchers = this._watchExternal(folder);
+      this._unwatchExternal(p.key);
+      this._external.set(p.key, watchers);
+      let entries: [string, vscode.FileType][] = [];
+      try {
+        entries = await vscode.workspace.fs.readDirectory(
+          vscode.Uri.file(folder),
+        );
+      } catch {
+        continue; // gone; the MASTER.DBF watcher brings the next graph
+      }
+      if (superseded()) {
+        // The newer build lists and watches it (its reset disposed ours).
+        if (this._external.get(p.key) === watchers) {
+          this._unwatchExternal(p.key);
+        }
+        break;
+      }
+      for (const [name, type] of entries.sort(([a], [b]) =>
+        a < b ? -1 : a > b ? 1 : 0,
+      )) {
+        const kind = (type & vscode.FileType.File) !== 0 && sourceKind(name);
+        if (kind) {
+          out[kind].push(vscode.Uri.file(path.join(folder, name)).fsPath);
+        }
+      }
+    }
+    return out;
+  }
+
+  /** Non-recursive watcher on an out-of-workspace project folder. */
+  private _watchExternal(folder: string): vscode.Disposable[] {
+    try {
+      const w = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(vscode.Uri.file(folder), "*"),
+      );
+      const route = (uri: vscode.Uri) => {
+        const p = uri.fsPath;
+        switch (sourceKind(p)) {
+          case "ci":
+            return this._debouncedSyncFromDisk(p);
+          case "labels":
+            return this._debouncedReindexLabels(p);
+          case "locvar":
+            return this._debouncedReindexLocvar(p);
+        }
+        if (isIncludeDbf(p)) this._debouncedRefreshProjects();
+      };
+      // Whether Include holds sources decides whether units are complete.
+      const andProjects = (uri: vscode.Uri) => {
+        route(uri);
+        if (sourceKind(uri.fsPath)) this._debouncedRefreshProjects();
+      };
+      return [
+        w,
+        w.onDidChange(route),
+        w.onDidCreate(andProjects),
+        w.onDidDelete(andProjects),
+      ];
+    } catch (e) {
+      error("cannot watch", folder, e);
+      return [];
+    }
+  }
+
+  private _unwatchExternal(key: string): void {
+    for (const d of this._external.get(key) ?? []) d.dispose();
+    this._external.delete(key);
+  }
+
+  /** Watch the MASTER.DBF of every User folder the graph was built from:
+   *  projects are registered, removed and renamed there. */
+  private _watchMasters(): void {
+    const dirs = this._graph.userFolders;
+    const key = dirs.map(projectKey).join("|");
+    if (key === this._masterWatchKey) return;
+    for (const d of this._masterWatchers) d.dispose();
+    this._masterWatchers = [];
+    this._masterWatchKey = key;
+    const refresh = () => this._debouncedRefreshProjects();
+    for (const dir of dirs) {
       try {
         const w = vscode.workspace.createFileSystemWatcher(
-          new vscode.RelativePattern(
-            vscode.Uri.file(path.dirname(f)),
-            path.basename(LABELS_DBF_GLOB),
-          ),
+          new vscode.RelativePattern(vscode.Uri.file(dir), MASTER_DBF_PATTERN),
         );
-        const reindex = () => this._debouncedReindexLabels(f);
-        this._externalWatchers.push(
+        this._masterWatchers.push(
           w,
-          w.onDidChange(reindex),
-          w.onDidCreate(reindex),
-          w.onDidDelete(reindex),
+          w.onDidChange(refresh),
+          w.onDidCreate(refresh),
+          w.onDidDelete(refresh),
         );
       } catch (e) {
-        error("cannot watch", f, e);
+        error("cannot watch", dir, e);
       }
     }
   }
 
-  private _disposeExternalWatchers(): void {
-    for (const d of this._externalWatchers) d.dispose();
-    this._externalWatchers = [];
+  private _disposeProjectWatchers(): void {
+    for (const k of [...this._external.keys()]) this._unwatchExternal(k);
+    for (const d of this._masterWatchers) d.dispose();
+    this._masterWatchers = [];
+    this._masterWatchKey = "";
   }
 
   private _indexLabels(filePath: string): void {
     this._purgeFile(filePath, false);
     const records = parseLabelsDbf(filePath);
+    if (records.length) this._track(filePath);
     for (const rec of records) {
       const parenIdx = rec.name.indexOf("(");
       if (parenIdx === -1) {
@@ -487,11 +908,13 @@ export class Indexer {
       this._addToReverseIndex(this._functionKeysByFile, filePath, key);
       this._refreshMacroView(key);
     }
+    this._views.clear();
   }
 
   private _indexLocvar(filePath: string): void {
     this._purgeFile(filePath, false);
     const records = parseLocvarDbf(filePath);
+    if (records.length) this._track(filePath);
     for (const rec of records) {
       this._addVar(rec.name, {
         name: rec.name,
@@ -505,14 +928,19 @@ export class Indexer {
         doc: rec.comment || undefined,
       });
     }
+    this._views.clear();
   }
 
   private _reindexLocvarFile(filePath: string): void {
+    filePath = this._indexedAs(filePath);
+    if (!this._inScope(filePath)) return;
     this._indexLocvar(filePath);
     this._onIndexed.fire(filePath);
   }
 
   private _reindexLabelsFile(filePath: string): void {
+    filePath = this._indexedAs(filePath);
+    if (!this._inScope(filePath)) return;
     this._indexLabels(filePath);
     this._onIndexed.fire(filePath);
   }
@@ -520,12 +948,31 @@ export class Indexer {
   private _maybeIndex(doc: vscode.TextDocument): void {
     if (!doc || !isIndexableUri(doc.uri)) return;
     if (sourceKind(doc.uri.fsPath) !== "ci") return;
+    this._noteLoose(doc.uri);
     this._debouncedIndex(doc);
+  }
+
+  /** The path a file is indexed under when it is reached by another
+   *  spelling (Windows paths ignore case), else the path itself. */
+  private _indexedAs(file: string): string {
+    return (foldCase && this._fileByLowerPath.get(file.toLowerCase())) || file;
+  }
+
+  /** The open document of a file, also under another spelling. */
+  private _openDocument(uri: vscode.Uri): vscode.TextDocument | undefined {
+    const doc = findOpenDocument(uri);
+    if (doc || !foldCase) return doc;
+    const lower = uri.fsPath.toLowerCase();
+    return vscode.workspace.textDocuments.find(
+      (d) =>
+        d.uri.scheme === uri.scheme && d.uri.fsPath.toLowerCase() === lower,
+    );
   }
 
   /** Re-sync one .ci file after it changed on disk. Cheap when nothing
    *  changed: open documents and unchanged bytes hit the content-hash guard. */
   private async _syncFromDisk(fsPath: string): Promise<void> {
+    fsPath = this._indexedAs(fsPath);
     const uri = vscode.Uri.file(fsPath);
     const known = this._indexedTextHash.has(fsPath);
     try {
@@ -535,8 +982,27 @@ export class Indexer {
       if (known) this._purgeFile(fsPath);
       return;
     }
-    if (!known && this._isExcluded(uri)) return;
+    if (!known && !this._inScope(fsPath)) return;
+    // excludePatterns are workspace-relative: they never apply to projects
+    // read from disk.
+    if (
+      !known &&
+      !this._external.has(projectKey(path.dirname(fsPath))) &&
+      this._isExcluded(uri)
+    ) {
+      return;
+    }
     await this._indexPath(uri);
+  }
+
+  /** A source the index keeps: under a workspace folder, or in a project
+   *  read from disk. A change queued for a folder that has left the
+   *  out-of-workspace set since is dropped. */
+  private _inScope(file: string): boolean {
+    return (
+      this._external.has(projectKey(path.dirname(file))) ||
+      this._graph.underWorkspace(file)
+    );
   }
 
   /** Same test as findWorkspaceFiles' `cicode.indexing.excludePatterns`
@@ -558,10 +1024,41 @@ export class Indexer {
     });
   }
 
+  /** Record an indexed source under its folder's project key. */
+  private _track(file: string): void {
+    if (!path.isAbsolute(file)) return;
+    const key = projectKey(path.dirname(file));
+    let s = this._filesByFolder.get(key);
+    if (!s) this._filesByFolder.set(key, (s = new Set()));
+    s.add(file);
+    if (foldCase) this._fileByLowerPath.set(file.toLowerCase(), file);
+  }
+
+  private _untrack(file: string): void {
+    if (!path.isAbsolute(file)) return;
+    const key = projectKey(path.dirname(file));
+    const s = this._filesByFolder.get(key);
+    if (s?.delete(file) && !s.size) this._filesByFolder.delete(key);
+    const lower = file.toLowerCase();
+    if (this._fileByLowerPath.get(lower) === file) {
+      this._fileByLowerPath.delete(lower);
+    }
+  }
+
+  /** The indexed .ci files of the project folder keyed `key`
+   *  (projectKey), in compile order (upper-case names). */
+  projectSourceFiles(key: string): string[] {
+    const upper = (f: string) => path.basename(f).toUpperCase();
+    return [...(this._filesByFolder.get(key) ?? [])]
+      .filter((f) => sourceKind(f) === "ci")
+      .sort((a, b) => (upper(a) < upper(b) ? -1 : upper(a) > upper(b) ? 1 : 0));
+  }
+
   /** Purge all cache entries owned by a file. Definitions of the same names
    *  in other files take over automatically. */
   private _purgeFile(file: string, fireEvent = true): void {
     this._indexedTextHash.delete(file);
+    this._untrack(file);
 
     const funcKeys = this._functionKeysByFile.get(file);
     if (funcKeys) {
@@ -685,9 +1182,10 @@ export class Indexer {
     this._onIndexed.fire(newKind ? newPath : oldPath);
   }
 
-  /** All indexed file paths located under a directory. */
+  /** All indexed file paths located under a directory (paths compare
+   *  case-insensitively, like the file system). */
   private _indexedFilesUnder(dir: string): string[] {
-    const prefix = dir + path.sep;
+    const prefix = (dir + path.sep).toLowerCase();
     const files = new Set<string>();
     for (const keys of [
       this._functionKeysByFile.keys(),
@@ -696,7 +1194,9 @@ export class Indexer {
       this.functionRangesByFile.keys(),
       this._ignoreSpansByFile.keys(),
     ]) {
-      for (const f of keys) if (f.startsWith(prefix)) files.add(f);
+      for (const f of keys) {
+        if (f.toLowerCase().startsWith(prefix)) files.add(f);
+      }
     }
     return [...files];
   }
@@ -706,7 +1206,7 @@ export class Indexer {
   private _purgePath(fsPath: string): void {
     const children = this._indexedFilesUnder(fsPath);
     if (children.length) for (const f of children) this._purgeFile(f);
-    else this._purgeFile(fsPath);
+    else this._purgeFile(this._indexedAs(fsPath));
   }
 
   /** Move a renamed path: a single file, or every indexed file under a folder
@@ -718,7 +1218,7 @@ export class Indexer {
         this._moveFile(f, newPath + f.slice(oldPath.length));
       }
     } else {
-      this._moveFile(oldPath, newPath);
+      this._moveFile(this._indexedAs(oldPath), newPath);
     }
   }
 
@@ -741,18 +1241,24 @@ export class Indexer {
   }
 
   /** Index a file by path, reusing an already-open document when available
-   *  and otherwise reading it from disk. */
-  private async _indexPath(uri: vscode.Uri): Promise<void> {
-    const openDoc = findOpenDocument(uri);
+   *  and otherwise reading it from disk. `quiet` (bulk indexing, announced
+   *  once at the end): no onIndexed(file). */
+  private async _indexPath(uri: vscode.Uri, quiet = false): Promise<void> {
+    const openDoc = this._openDocument(uri);
     if (openDoc) {
-      await this._indexFile(openDoc);
+      await this._indexFile(openDoc, quiet);
       return;
     }
+    const file = this._indexedAs(uri.fsPath);
+    if (file !== uri.fsPath) uri = vscode.Uri.file(file);
     const text = await readSourceText(uri);
-    await this._indexFile(new FileDocument(uri, text));
+    await this._indexFile(new FileDocument(uri, text), quiet);
   }
 
-  private async _indexFile(doc: IndexableDocument): Promise<void> {
+  private async _indexFile(
+    doc: IndexableDocument,
+    quiet = false,
+  ): Promise<void> {
     const file = doc.uri.fsPath;
     const text = doc.getText();
 
@@ -760,8 +1266,12 @@ export class Indexer {
     const hash = `${text.length}:${fnv1a(text)}`;
     if (this._indexedTextHash.get(file) === hash) return;
 
+    // Indexed under another spelling: the open document's takes over.
+    const was = this._indexedAs(file);
+    if (was !== file) this._purgeFile(was, !quiet);
     this._purgeFile(file, false);
     this._indexedTextHash.set(file, hash);
+    this._track(file);
     const base = buildIgnoreSpans(text, { includeFunctionHeaders: false });
     const lineIndex =
       doc instanceof FileDocument ? doc.lineIndex : buildLineIndex(text);
@@ -831,8 +1341,9 @@ export class Indexer {
         isParam: false,
       });
     }
+    this._views.clear();
 
-    if (!this._bulkIndexing) this._onIndexed.fire(file);
+    if (!quiet) this._onIndexed.fire(file);
   }
 
   private _toFunctionRange(
@@ -1156,7 +1667,9 @@ export class Indexer {
     this._debouncedReindexLabels.cancelAll();
     this._debouncedReindexLocvar.cancelAll();
     this._debouncedSyncFromDisk.cancelAll();
-    this._disposeExternalWatchers();
+    this._debouncedRefreshProjects.cancel();
+    this._debouncedBuildAll.cancel();
+    this._disposeProjectWatchers();
     this._onIndexed.dispose();
   }
 }

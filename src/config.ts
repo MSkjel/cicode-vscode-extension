@@ -18,10 +18,12 @@ function compilePatterns(patterns: string[]): RegExp[] {
  * Find workspace files matching a pattern.
  * Always bypasses files.exclude (passes null), then filters against
  * cicode.indexing.excludePatterns so only our own setting controls exclusions.
+ * The files those skip are added to `excluded`.
  */
 export async function findWorkspaceFiles(
   include: string,
   cfg: () => vscode.WorkspaceConfiguration,
+  excluded?: vscode.Uri[],
 ): Promise<vscode.Uri[]> {
   const all = await vscode.workspace.findFiles(include, null);
 
@@ -31,7 +33,9 @@ export async function findWorkspaceFiles(
   const regexes = compilePatterns(patterns);
   return all.filter((uri) => {
     const rel = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
-    return !regexes.some((re) => re.test(rel));
+    const skip = regexes.some((re) => re.test(rel));
+    if (skip) excluded?.push(uri);
+    return !skip;
   });
 }
 

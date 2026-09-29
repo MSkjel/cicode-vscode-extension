@@ -31,6 +31,11 @@ export function registerDiagnostics(
     try {
       if (!indexingReady) return;
       if (!isCicodeDocument(doc)) return;
+      // Projects outside the workspace are read for their names only.
+      if (indexer.isExternal(doc.uri.fsPath)) {
+        coll.delete(doc.uri);
+        return;
+      }
 
       const text = doc.getText();
       const lintCfg = getLintConfig(cfg);
@@ -123,7 +128,9 @@ export function registerDiagnostics(
 
   async function runAll(): Promise<void> {
     const gen = ++runAllGen;
-    const files = await findWorkspaceFiles(CI_FILE_GLOB, cfg);
+    const files = (await findWorkspaceFiles(CI_FILE_GLOB, cfg)).filter(
+      (f) => !indexer.isExternal(f.fsPath),
+    );
     for (const file of files) {
       if (gen !== runAllGen) return; // superseded by a newer runAll
       try {
@@ -137,11 +144,15 @@ export function registerDiagnostics(
     if (gen !== runAllGen) return;
 
     // Drop entries for files no longer in the file set (e.g. after a
-    // cicode.indexing.excludePatterns change); keep files open in a tab.
+    // cicode.indexing.excludePatterns change); keep files open in a tab,
+    // unless a project change made them external.
     const keep = new Set(files.map((f) => f.fsPath));
     for (const group of vscode.window.tabGroups.all) {
       for (const tab of group.tabs) {
-        if (tab.input instanceof vscode.TabInputText) {
+        if (
+          tab.input instanceof vscode.TabInputText &&
+          !indexer.isExternal(tab.input.uri.fsPath)
+        ) {
           keep.add(tab.input.uri.fsPath);
         }
       }
@@ -157,13 +168,16 @@ export function registerDiagnostics(
 
   /** Re-check the Cicode documents VS Code already has loaded (open editors
    *  plus the ones runAll opened), yielding between files. Loaded documents
-   *  the index no longer has (deleted or renamed away) are skipped. */
+   *  the index no longer has (deleted or renamed away) and files of
+   *  projects outside the workspace are skipped. */
   async function runLoaded(): Promise<void> {
     const gen = ++refreshGen;
     const docs = vscode.workspace.textDocuments.filter(isCicodeDocument);
     for (const doc of docs) {
       if (gen !== refreshGen) return; // superseded by a newer refresh
-      if (doc.isClosed || !indexer.getIgnoreSpans(doc.uri.fsPath)) continue;
+      const file = doc.uri.fsPath;
+      if (doc.isClosed || !indexer.getIgnoreSpans(file)) continue;
+      if (indexer.isExternal(file)) continue;
       await run(doc);
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
@@ -204,14 +218,19 @@ export function registerDiagnostics(
       }
 
       if (updateSymbolSig(changedFile)) scheduleRefresh(false);
+      // A project outside the workspace (a watcher, or an edit of an opened
+      // file) only changes what other files see.
+      if (indexer.isExternal(changedFile)) return;
       const doc = vscode.workspace.textDocuments.find(
         (d) => d.uri.fsPath === changedFile,
       );
       if (doc) {
         if (isCicodeDocument(doc)) run(doc);
-      } else {
+      } else if (indexer.projects.projectOf(changedFile).inWorkspace) {
         // Reindexed while not loaded (e.g. renamed, or restored after a
         // shadowing definition was removed); load it to refresh its entry.
+        // Other files of an opened file's project stay unchecked until
+        // opened.
         vscode.workspace.openTextDocument(vscode.Uri.file(changedFile)).then(
           (d) => run(d),
           () => {

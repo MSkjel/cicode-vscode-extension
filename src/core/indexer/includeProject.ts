@@ -1,6 +1,5 @@
 import * as fs from "fs";
 import * as path from "path";
-import { parseDbf } from "./dbfReader";
 
 export function isDir(p: string): boolean {
   try {
@@ -48,18 +47,6 @@ function iniValue(
     ) {
       return line.slice(eq + 1).trim() || undefined;
     }
-  }
-  return undefined;
-}
-
-/** Folder of the project registered as `name` in a User folder's MASTER.DBF. */
-function projectFromMaster(userDir: string, name: string): string | undefined {
-  const master = findFileInDir(userDir, "MASTER.DBF");
-  if (!master) return undefined;
-  for (const row of parseDbf(master)) {
-    if ((row["NAME"] ?? "").toLowerCase() !== name.toLowerCase()) continue;
-    const dir = (row["PATH"] ?? "").replace(/[\\/]+$/, "");
-    if (dir && isDir(dir)) return dir;
   }
   return undefined;
 }
@@ -119,59 +106,6 @@ function installedUserDirs(install?: string): string[] {
   return found
     .sort((a, b) => Number(b.ours) - Number(a.ours) || b.mtime - a.mtime)
     .map((f) => f.dir);
-}
-
-export interface IncludeLookup {
-  /** Explicit Include project folder (or its labels.DBF); skips discovery. */
-  readonly explicit?: string;
-  /** Folders to start from, e.g. the workspace folders. */
-  readonly near: readonly string[];
-  /** The `cicode.avevaPath` setting: the installation folder, whose
-   *  version's User folder is preferred (a User or data folder works too). */
-  readonly avevaPath?: string;
-}
-
-/**
- * labels.DBF of the Include project, which the compiler adds to every
- * project. Searched in the User folder above the given folders (its
- * MASTER.DBF names the Include project), then in the installed versions'
- * User folders. Undefined when none is found; never throws.
- */
-export function locateIncludeLabels(opts: IncludeLookup): string | undefined {
-  try {
-    return locate(opts);
-  } catch {
-    return undefined;
-  }
-}
-
-function locate(opts: IncludeLookup): string | undefined {
-  const labelsIn = (dir: string | undefined) =>
-    dir && isDir(dir) ? findFileInDir(dir, "labels.DBF") : undefined;
-
-  if (opts.explicit) {
-    const p = path.resolve(opts.explicit);
-    return /\.dbf$/i.test(p) && fs.existsSync(p) ? p : labelsIn(p);
-  }
-
-  const userDirs: string[] = [];
-  for (const d of opts.near) userDirs.push(...userDirsAbove(d));
-  if (opts.avevaPath) {
-    userDirs.push(opts.avevaPath, path.join(opts.avevaPath, "User"));
-  }
-  userDirs.push(...installedUserDirs(opts.avevaPath));
-
-  const seen = new Set<string>();
-  for (const u of userDirs) {
-    const key = path.resolve(u).toLowerCase();
-    if (seen.has(key) || !isDir(u)) continue;
-    seen.add(key);
-    const hit =
-      labelsIn(projectFromMaster(u, "Include")) ??
-      labelsIn(path.join(u, "Include"));
-    if (hit) return hit;
-  }
-  return undefined;
 }
 
 /**
