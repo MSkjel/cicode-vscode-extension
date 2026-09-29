@@ -332,7 +332,8 @@
         {
           "id": "cicodeExplorer",
           "name": "Cicode Explorer",
-          "icon": ""
+          "icon": "",
+          "when": "cicode.hasCicodeFiles"
         }
       ]
     },

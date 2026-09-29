@@ -10,6 +10,22 @@ export function makeSideBar() {
     vscode.window.registerTreeDataProvider("cicodeExplorer", provider),
   );
 
+  // The view shows only while the workspace holds .ci files (its "when" in
+  // package.json): any view that can be expanded activates the extension
+  // (onView), also in workspaces without Cicode.
+  const sync = () => {
+    provider.refresh();
+    void provider
+      .hasFiles()
+      .then((has) =>
+        vscode.commands.executeCommand(
+          "setContext",
+          "cicode.hasCicodeFiles",
+          has,
+        ),
+      );
+  };
+
   // The tree lists files only, so content changes don't affect it.
   const watcher = vscode.workspace.createFileSystemWatcher(
     CI_FILE_GLOB,
@@ -17,9 +33,16 @@ export function makeSideBar() {
     true,
     false,
   );
-  watcher.onDidCreate(() => provider.refresh());
-  watcher.onDidDelete(() => provider.refresh());
-  disposables.push(watcher);
+  watcher.onDidCreate(sync);
+  watcher.onDidDelete(sync);
+  disposables.push(
+    watcher,
+    vscode.workspace.onDidChangeWorkspaceFolders(sync),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("cicode.indexing.excludePatterns")) sync();
+    }),
+  );
+  sync();
 
   return disposables;
 }
@@ -57,6 +80,11 @@ class CicodeExplorerProvider implements vscode.TreeDataProvider<CicodeExplorerIt
     this.ciDirs = null;
     this.ciFiles = null;
     this._onDidChangeTreeData.fire();
+  }
+
+  async hasFiles(): Promise<boolean> {
+    await this.getCiDirs();
+    return (this.ciFiles?.size ?? 0) > 0;
   }
 
   getTreeItem(element: CicodeExplorerItem): vscode.TreeItem {
