@@ -57,7 +57,14 @@ Full syntax highlighting for `.ci` files including:
 - Built-in functions come from the compiler's own function table, `Bin\FUNC0.DBF` of your Plant SCADA installation: names, return and argument types, exact argument counts, and obsolete flags. Without an installation, a copy shipped with the extension is used.
 - Functions that the documentation lists but that are really Cicode in AVEVA's library projects, and the function-like labels of the Include project, are known too.
 - Descriptions and parameter docs are read from the local AVEVA help; hover over a function to see them, with a link to open the full help page.
-- The Include project, which the compiler adds to every project, is found automatically, so its labels (`TRUE`, `FALSE`, `Print(...)`, ...) are known even when it is not part of your workspace. Set `cicode.indexing.includeProjectPath` if it is somewhere else.
+- The Include project, which the compiler adds to every project, is found automatically, so its functions and labels (`TRUE`, `FALSE`, `Print(...)`, ...) are known even when it is not part of your workspace. Set `cicode.indexing.includeProjectPath` if it is somewhere else.
+
+### Projects and Includes
+
+- Every file is checked against what the compiler compiles with it: its project, the projects in its `include.DBF` (recursively) and the Include project. The extension climbs from a project to every top-level project that includes it, so a library also sees the functions, labels and GLOBALs of the projects that include it and of their other includes.
+- Projects that are never compiled together don't affect each other: no duplicate-definition errors between them, and completion, hover, go to definition, references and rename stay within the projects compiled together.
+- A duplicate function or GLOBAL is reported where the compiler reports it: at the definition compiled later.
+- Project names are resolved through the `MASTER.DBF` of the User folder above the workspace, from `cicode.avevaPath` or from the installed versions. Included projects outside the workspace are read from disk, so opening a single project is enough; they are never checked, and rename refuses their definitions.
 
 ## Installation
 
