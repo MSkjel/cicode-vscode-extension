@@ -386,7 +386,9 @@
     "publish": "@vscode/vsce publish",
     "generate-test-files": "npx ts-node scripts/generate-test-files.ts",
     "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.ts\"",
-    "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.ts\""
+    "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.ts\"",
+    "format:cs": "dotnet format whitespace --folder dap",
+    "format:cs:check": "dotnet format whitespace --folder dap --verify-no-changes"
   },
   "dependencies": {
     "cheerio": "^1.2.0"
