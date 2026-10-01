@@ -18,10 +18,12 @@ function compilePatterns(patterns: string[]): RegExp[] {
  * Find workspace files matching a pattern.
  * Always bypasses files.exclude (passes null), then filters against
  * cicode.indexing.excludePatterns so only our own setting controls exclusions.
+ * The files those skip are added to `excluded`.
  */
 export async function findWorkspaceFiles(
   include: string,
   cfg: () => vscode.WorkspaceConfiguration,
+  excluded?: vscode.Uri[],
 ): Promise<vscode.Uri[]> {
   const all = await vscode.workspace.findFiles(include, null);
 
@@ -31,7 +33,9 @@ export async function findWorkspaceFiles(
   const regexes = compilePatterns(patterns);
   return all.filter((uri) => {
     const rel = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
-    return !regexes.some((re) => re.test(rel));
+    const skip = regexes.some((re) => re.test(rel));
+    if (skip) excluded?.push(uri);
+    return !skip;
   });
 }
 
@@ -59,15 +63,15 @@ export function getLintConfig(
   const c = cfg();
   return {
     enabled: c.get("cicode.lint.enable", true),
-    maxLineLength: c.get("cicode.lint.maxLineLength", 140) || 0,
+    maxLineLength: c.get("cicode.lint.maxLineLength", 160) || 0,
     warnMixedIndent: c.get("cicode.lint.warnMixedIndent", true),
     warnMissingSemicolons: c.get("cicode.lint.warnMissingSemicolons", true),
-    warnKeywordCase: c.get("cicode.lint.warnKeywordCase", true),
+    warnKeywordCase: c.get("cicode.lint.warnKeywordCase", false),
     warnMagicNumbers: c.get("cicode.lint.warnMagicNumbers", false),
     warnUnusedVariables: c.get("cicode.lint.warnUnusedVariables", true),
     warnUndeclaredVariables: c.get(
       "cicode.diagnostics.warnUndeclaredVariables",
-      true,
+      false,
     ),
     warnInvalidTypes: c.get("cicode.diagnostics.warnInvalidTypes", true),
     ignoredUndeclaredVariables: compilePatterns(
@@ -78,7 +82,7 @@ export function getLintConfig(
       true,
     ),
     maxCallNestingDepth: c.get("cicode.lint.maxCallNestingDepth", 5),
-    maxBlockNestingDepth: c.get("cicode.lint.maxBlockNestingDepth", 4),
+    maxBlockNestingDepth: c.get("cicode.lint.maxBlockNestingDepth", 6),
     ignoredFunctions: compilePatterns(
       c.get("cicode.diagnostics.ignoredFunctions", []) as string[],
     ),

@@ -2,7 +2,7 @@
   "name": "cicode-vscode-extension",
   "displayName": "Cicode Syntax Highlighting",
   "description": "Syntax highlighting and navigation for Cicode",
-  "version": "0.7.4",
+  "version": "0.8.0-rc.0",
   "publisher": "MSkjel",
   "repository": {
     "type": "git",
@@ -16,7 +16,7 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "workspaceContains:**/*.ci"
+    "workspaceContains:**/*.[cC][iI]"
   ],
   "contributes": {
     "languages": [
@@ -37,6 +37,23 @@
         "language": "cicode",
         "scopeName": "source.cicode",
         "path": "./syntaxes/cicode.tmLanguage.json"
+      }
+    ],
+    "semanticTokenTypes": [
+      {
+        "id": "builtin",
+        "superType": "function",
+        "description": "Built-in Cicode function"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "cicode",
+        "scopes": {
+          "builtin": [
+            "support.function"
+          ]
+        }
       }
     ],
     "commands": [
@@ -102,7 +119,7 @@
       "properties": {
         "cicode.explorer.expandFolders": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Expand folders by default in the Cicode Explorer."
         },
         "cicode.indexing.excludePatterns": {
@@ -113,49 +130,33 @@
           "default": [],
           "description": "Regular expressions matched against workspace-relative file paths to exclude from indexing."
         },
+        "cicode.indexing.includeProjectPath": {
+          "type": "string",
+          "default": "",
+          "description": "Folder of the Include project, or its labels.DBF. The compiler adds Include to every project, so its labels are known in every file. Empty: found automatically (the project named Include in the MASTER.DBF of the User folder above the workspace, then under cicode.avevaPath, then in the User folders of the installed Plant SCADA versions, the one belonging to cicode.avevaPath first). Not used when the workspace contains the Include project."
+        },
         "cicode.signatureOverrides": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": [
-            "STRING SQLErrMsg([INT hHandle])",
-            "STRING MapOpen(STRING sMapName, INT nOpenMode [, STRING sCloseCallback])",
-            "STRING StrToLocalText(STRING sText)",
-            "INT DevClose(INT hDev [, INT Mode])",
-            "INT _ObjectCallMethod(INT hObject, STRING sMethod [, OBJECT vParam1] [, OBJECT vParam2] [, OBJECT vParam3] [, OBJECT vParam4] [, OBJECT vParam5] [, OBJECT vParam6] [, OBJECT vParam7] [, OBJECT vParam8] [, OBJECT vParam9] [, OBJECT vParam10])",
-            "INT ErrSetHw(INT Device, INT Error [, INT DeviceType])",
-            "INT TrnBrowseClose(INT iSession)",
-            "INT DspPopupMenu([INT iMenuNumber] [, STRING sMenuItems] [, INT XPos] [, INT YPos] [, INT bScaleX] [, INT bScaleY])",
-            "INT FormEdit(INT Col, INT Row, STRING Text, INT Width [, INT Height] [, INT bReadOnly] [, INT maxTextLength])",
-            "INT DspGetMouseOver([INT nAN])",
-            "INT MapValueSet(STRING sMapName, STRING sKeyName, VARIANT Value [, INT nSetMode])",
-            "UNKNOWN SubscriptionGetTag(INT iHandle [, INT sOffset])",
-            "STRING UserVerify(STRING sName, STRING sPassword [, sAccess] [, sPrivGlobal] [, sPriv1] [, sPriv2] [, sPriv3] [, sPriv4] [, sPriv5] [, sPriv6] [, sPriv7] [, sPriv8])",
-            "UNKNOWN EquipGetProperty(STRING Name, STRING Field [, INT Mode] [, STRING Cluster])",
-            "INT TimestampDifference(TIMESTAMP Timestamp1, TIMESTAMP Timestamp2 [, INT Part] [, INT bCumulative])",
-            "STRING SQLGetField(INT hGeneral, STRING sField [, INT nRowIndex])",
-            "INT ServerBrowseOpen([STRING Filter] [, STRING Fields] [, STRING Clusters])",
-            "TIMESTAMP VariableTimestamp(Variable [, INT Type])",
-            "STRING MenuNodeGetTargetPage([INT hNode])",
-            "INT MenuNodeSetExpanded(hNode, iValue)",
-            "UNKNOWN DLLCallEx(hFunction [, OBJECT vParam1] [, OBJECT vParam2] [, OBJECT vParam3] [, OBJECT vParam4] [, OBJECT vParam5] [, OBJECT vParam6] [, OBJECT vParam7] [, OBJECT vParam8] [, OBJECT vParam9] [, OBJECT vParam10])",
-            "INT TrnNew(INT nAN, STRING Trend [, Tag1] [, Tag2] [, Tag3] [, Tag4] [, Tag5] [, Tag6] [, Tag7] [, Tag8] [, STRING sClusterName])",
-            "UNKNOWN SubscriptionGetTimestamp(INT iHandle [, STRING sAttribute])",
-            "STRING QualityToStr(QUALITY quality, INT part [, INT localized])",
-            "UNKNOWN SubscriptionGetValue(iHandle [, INT sOffset])"
-          ],
-          "description": "Override or add function signatures. Each entry is a Cicode signature string, e.g. \"STRING BlaBla(STRING sLol, [STRING sOptional])\" or \"VOID Test2()\". Optional parameters use square brackets."
+          "default": [],
+          "description": "Override or add function signatures. Each entry is a Cicode signature string, e.g. \"STRING MyFormat(STRING sText, [STRING sPicture])\" or \"INT MyInit()\". Optional parameters use square brackets or a default value (\"INT nMode = 0\"). Built-in signatures come from the compiler's own function table (Bin\\FUNC0.DBF), so overrides are only needed for functions it doesn't know."
         },
         "cicode.avevaPath": {
           "type": "string",
           "default": "C:/Program Files (x86)/AVEVA Plant SCADA",
-          "description": "Path to AVEVA Plant SCADA installation folder. The extension will automatically find the help files."
+          "description": "Path to the AVEVA Plant SCADA installation folder. The extension reads the compiler's built-in function table from its Bin folder (Bin\\FUNC0.DBF) and finds the help files automatically."
+        },
+        "cicode.helpServerUrl": {
+          "type": "string",
+          "default": "https://localhost:28808",
+          "description": "Root URL of the local AVEVA help server (Product Help Viewer Service, 2023 R2 and later), used by 'Open full help' and the 'Cicode: Open Help for Symbol' command."
         },
         "cicode.hover.showHelpLink": {
           "type": "boolean",
           "default": true,
-          "description": "Show 'Open full help' link in hovers for builtins."
+          "description": "Show an 'Open full help' link in hovers of functions that have an AVEVA help page."
         },
         "cicode.diagnostics.enable": {
           "type": "boolean",
@@ -172,7 +173,7 @@
           "default": 1,
           "minimum": 0,
           "maximum": 5,
-          "description": "Collapse multiple blank lines to this maximum (outside parentheses only)."
+          "description": "Collapse runs of blank lines to this maximum (not inside parentheses, strings or comments)."
         },
         "cicode.lint.enable": {
           "type": "boolean",
@@ -193,12 +194,12 @@
         "cicode.lint.warnMissingSemicolons": {
           "type": "boolean",
           "default": true,
-          "description": "Warn (info) when type declarations lack a trailing semicolon."
+          "description": "Hint when a declaration has no trailing semicolon. Style only: the compiler never requires a semicolon."
         },
         "cicode.lint.warnKeywordCase": {
           "type": "boolean",
           "default": false,
-          "description": "Suggest UPPERCASE keywords/END/IF/etc. Does not auto-fix."
+          "description": "Suggest upper-case keywords (END, IF, ...). Style only: keywords are case-insensitive; upper case is the AVEVA convention. Does not auto-fix."
         },
         "cicode.lint.warnUnusedVariables": {
           "type": "boolean",
@@ -208,12 +209,12 @@
         "cicode.diagnostics.warnInvalidTypes": {
           "type": "boolean",
           "default": true,
-          "description": "Warn when a variable or function is declared with a tag data type that is not valid in Cicode (e.g. LONG, DIGITAL, BYTE)."
+          "description": "Report declarations whose type is not one of the six Cicode types (INT, REAL, STRING, OBJECT, QUALITY, TIMESTAMP), e.g. the tag types LONG, DIGITAL or BYTE. The compiler rejects such a parameter, module or global variable or return type; a local one declares nothing (the words are read as tags)."
         },
         "cicode.diagnostics.warnUndeclaredVariables": {
           "type": "boolean",
           "default": false,
-          "description": "Warn about variables that are used but never declared."
+          "description": "Warn about names that are not a declared variable, function or label. The compiler reads such a name as a variable tag (W1007 Tag not defined when the project has none); tags are not indexed, so this is off by default."
         },
         "cicode.diagnostics.ignoredUndeclaredVariables": {
           "type": "array",
@@ -243,7 +244,7 @@
         "cicode.diagnostics.warnDeclarationsInBlocks": {
           "type": "boolean",
           "default": true,
-          "description": "Warn when a variable declaration appears inside a control flow block (IF/FOR/WHILE/SELECT)."
+          "description": "Report variable declarations inside IF, WHILE, FOR or SELECT blocks, which the compiler rejects (E2041)."
         },
         "cicode.diagnostics.ignoredFunctions": {
           "type": "array",
@@ -331,7 +332,8 @@
         {
           "id": "cicodeExplorer",
           "name": "Cicode Explorer",
-          "icon": ""
+          "icon": "",
+          "when": "cicode.hasCicodeFiles"
         }
       ]
     },
@@ -384,7 +386,9 @@
     "publish": "@vscode/vsce publish",
     "generate-test-files": "npx ts-node scripts/generate-test-files.ts",
     "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.ts\"",
-    "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.ts\""
+    "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.ts\"",
+    "format:cs": "dotnet format whitespace --folder dap",
+    "format:cs:check": "dotnet format whitespace --folder dap --verify-no-changes"
   },
   "dependencies": {
     "cheerio": "^1.2.0"

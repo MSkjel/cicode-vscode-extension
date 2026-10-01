@@ -33,7 +33,6 @@ namespace CicodeDebugAdapter
                     + ")"
             );
 
-            IpcClient.InitCrc();
             ScadaVersion.Init();
             RuntimeClient.Start();
 
@@ -155,7 +154,7 @@ namespace CicodeDebugAdapter
                 }
             }
 
-            done:
+        done:
             Logger.Dap("stdin closed. exiting");
             Logger.Close();
         }

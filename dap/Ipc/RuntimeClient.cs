@@ -134,22 +134,15 @@ namespace CicodeDebugAdapter
         void SendProcessInfoChanged()
         {
             byte[] body = BuildProcessInfoBody();
-            lock (SendLock)
-            {
-                uint seqId = NextSeqId();
-                Logger.Ipc(
-                    "RuntimeClient: sending ProcessInfoChangedMessage (ProcessToString=RuntimeManagerUI)"
-                );
-                SendFrameLocked(
-                    seqId,
-                    BuildMsgPayload(
-                        ScadaVersion.HashProcessInfoChanged,
-                        ScadaVersion.TnProcessInfoChanged,
-                        ref _sentPicType,
-                        body
-                    )
-                );
-            }
+            Logger.Ipc(
+                "RuntimeClient: sending ProcessInfoChangedMessage (ProcessToString=RuntimeManagerUI)"
+            );
+            SendMessage(
+                ScadaVersion.HashProcessInfoChanged,
+                ScadaVersion.TnProcessInfoChanged,
+                ref _sentPicType,
+                body
+            );
         }
 
         static byte[] BuildProcessInfoBody()

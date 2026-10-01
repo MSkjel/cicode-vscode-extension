@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { findWorkspaceFiles, cfg } from "../config";
+import { CI_FILE_GLOB } from "../shared/globs";
 
 export function makeSideBar() {
   const disposables: vscode.Disposable[] = [];
@@ -9,11 +10,41 @@ export function makeSideBar() {
     vscode.window.registerTreeDataProvider("cicodeExplorer", provider),
   );
 
-  const watcher = vscode.workspace.createFileSystemWatcher("**/*.ci");
-  watcher.onDidCreate(() => provider.refresh());
-  watcher.onDidChange(() => provider.refresh());
-  watcher.onDidDelete(() => provider.refresh());
-  disposables.push(watcher);
+  // The view shows only while the workspace holds .ci files (its "when" in
+  // package.json): any view that can be expanded activates the extension
+  // (onView), also in workspaces without Cicode.
+  const sync = () => {
+    provider.refresh();
+    void provider
+      .hasFiles()
+      .then((has) =>
+        vscode.commands.executeCommand(
+          "setContext",
+          "cicode.hasCicodeFiles",
+          has,
+        ),
+      );
+  };
+
+  // The tree lists files only, so content changes don't affect it.
+  const watcher = vscode.workspace.createFileSystemWatcher(
+    CI_FILE_GLOB,
+    false,
+    true,
+    false,
+  );
+  watcher.onDidCreate(sync);
+  watcher.onDidDelete(sync);
+  disposables.push(
+    watcher,
+    vscode.workspace.onDidChangeWorkspaceFolders(sync),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("cicode.indexing.excludePatterns")) sync();
+      else if (e.affectsConfiguration("cicode.explorer.expandFolders"))
+        provider.refresh();
+    }),
+  );
+  sync();
 
   return disposables;
 }
@@ -27,6 +58,9 @@ class CicodeExplorerItem extends vscode.TreeItem {
   ) {
     super(label, collapsibleState);
     this.contextValue = isFile ? "file" : "folder";
+    // The id carries a folder's default state, so a changed
+    // cicode.explorer.expandFolders applies instead of the remembered state.
+    if (resourceUri) this.id = `${collapsibleState}:${resourceUri.fsPath}`;
     if (resourceUri && isFile) {
       this.resourceUri = resourceUri;
       this.command = {
@@ -53,6 +87,11 @@ class CicodeExplorerProvider implements vscode.TreeDataProvider<CicodeExplorerIt
     this._onDidChangeTreeData.fire();
   }
 
+  async hasFiles(): Promise<boolean> {
+    await this.getCiDirs();
+    return (this.ciFiles?.size ?? 0) > 0;
+  }
+
   getTreeItem(element: CicodeExplorerItem): vscode.TreeItem {
     return element;
   }
@@ -69,7 +108,7 @@ class CicodeExplorerProvider implements vscode.TreeDataProvider<CicodeExplorerIt
       if (folders.length === 1) {
         return this.readDirectory(folders[0].uri.fsPath, ciDirs);
       }
-      const folderState = cfg().get("cicode.explorer.expandFolders", true)
+      const folderState = cfg().get("cicode.explorer.expandFolders", false)
         ? vscode.TreeItemCollapsibleState.Expanded
         : vscode.TreeItemCollapsibleState.Collapsed;
       return folders
@@ -87,7 +126,7 @@ class CicodeExplorerProvider implements vscode.TreeDataProvider<CicodeExplorerIt
   private async getCiDirs(): Promise<Set<string>> {
     if (this.ciDirs) return this.ciDirs;
 
-    const uris = await findWorkspaceFiles("**/*.ci", cfg);
+    const uris = await findWorkspaceFiles(CI_FILE_GLOB, cfg);
     const dirs = new Set<string>();
     const files = new Set<string>();
     for (const uri of uris) {
@@ -130,7 +169,7 @@ class CicodeExplorerProvider implements vscode.TreeDataProvider<CicodeExplorerIt
           new CicodeExplorerItem(
             path.basename(fullPath),
             isDir
-              ? cfg().get("cicode.explorer.expandFolders", true)
+              ? cfg().get("cicode.explorer.expandFolders", false)
                 ? vscode.TreeItemCollapsibleState.Expanded
                 : vscode.TreeItemCollapsibleState.Collapsed
               : vscode.TreeItemCollapsibleState.None,

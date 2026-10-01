@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import { decodeWindows1252 } from "../../shared/utils";
 
 export interface DbfField {
   name: string;
@@ -44,20 +45,40 @@ export function readDbfHeader(buf: Buffer): DbfHeader | null {
 
 /**
  * Parse a DBF file and return all non-deleted records as plain objects.
- * Field values are trimmed strings. Field names are uppercased for consistency.
+ * Field values are trimmed strings, decoded as cp1252. Field names are
+ * uppercased for consistency.
  */
 export function parseDbf(filePath: string): Record<string, string>[] {
+  return readRecords(filePath, false) ?? [];
+}
+
+/** Like parseDbf, but undefined when the file cannot be read or is cut
+ *  short (e.g. while it is being rewritten), so a caller can keep what it
+ *  read before. */
+export function readDbfStrict(
+  filePath: string,
+): Record<string, string>[] | undefined {
+  return readRecords(filePath, true);
+}
+
+function readRecords(
+  filePath: string,
+  strict: boolean,
+): Record<string, string>[] | undefined {
   let buf: Buffer;
   try {
     buf = fs.readFileSync(filePath);
   } catch {
-    return [];
+    return undefined;
   }
 
   const header = readDbfHeader(buf);
-  if (!header) return [];
+  if (!header) return strict ? undefined : [];
 
   const { recordCount, headerSize, recordSize, fields } = header;
+  if (strict && headerSize + recordCount * recordSize > buf.length) {
+    return undefined;
+  }
 
   // Compute byte offset of each field within a record (byte 0 = deletion flag)
   const offsets: number[] = [];
@@ -76,9 +97,12 @@ export function parseDbf(filePath: string): Record<string, string>[] {
     const record: Record<string, string> = {};
     for (let fi = 0; fi < fields.length; fi++) {
       const f = fields[fi];
-      record[f.name.toUpperCase()] = buf
-        .subarray(recStart + offsets[fi], recStart + offsets[fi] + f.length)
-        .toString("binary")
+      // Tables are in the ANSI code page like the source files, and the
+      // compiler compares names from both by their bytes (ignoring only the
+      // case of ASCII letters), so both are decoded alike.
+      record[f.name.toUpperCase()] = decodeWindows1252(
+        buf.subarray(recStart + offsets[fi], recStart + offsets[fi] + f.length),
+      )
         .replace(/\0/g, "")
         .trim();
     }

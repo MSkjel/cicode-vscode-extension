@@ -1,92 +1,21 @@
 import * as vscode from "vscode";
 import type { Rule } from "../rule";
 import type { CheckContext } from "../context";
-import { diag } from "../diag";
-import { inSpan } from "../../../shared/textUtils";
-import { getFunctionBodyText } from "../../../shared/parseHelpers";
-import {
-  BLOCK_OPENERS,
-  STRUCTURAL_KEYWORDS,
-  TOKEN_RE,
-  SYMBOL_CONTINUATION_RE,
-  WORD_CONTINUATION_OPS,
-} from "../../../shared/constants";
+import { hint } from "../diag";
+import { functionBody, usesStructuralLabel, type Stmt } from "./statements";
 
 /**
- * Returns the position in `body` just after the RETURN statement starting at
- * `pos`. Handles semicolon-terminated, newline-terminated, and multi-line
+ * Hints at statements that follow a RETURN in the same statement list and
+ * can never run. The compiler says nothing about them. In a function
+ * without a return type RETURN takes no value, so `RETURN Foo();` returns
+ * at once and never calls Foo; in a typed function RETURN takes the
+ * expression after it, also from the next line.
  */
-function skipReturnStatement(body: string, pos: number): number {
-  let parenDepth = 0;
-  let i = pos;
-
-  while (i < body.length) {
-    const ch = body[i];
-
-    // Skip string literals
-    if (ch === '"' || ch === "'") {
-      i++;
-      while (i < body.length && body[i] !== ch) i++;
-      i++;
-      continue;
-    }
-
-    if (ch === "(") {
-      parenDepth++;
-    } else if (ch === ")") {
-      parenDepth--;
-    } else if (ch === ";" && parenDepth === 0) {
-      return i + 1;
-    } else if ((ch === "\n" || ch === "\r") && parenDepth === 0) {
-      // Treat \r\n as a single newline
-      const lineEnd = ch === "\r" && body[i + 1] === "\n" ? i + 2 : i + 1;
-
-      // Look backward for the last non-whitespace to detect continuations.
-      let k = i - 1;
-      while (k >= pos && /\s/.test(body[k])) k--;
-
-      // Symbol operators at end of line: + - * / ,
-      if (k >= pos && SYMBOL_CONTINUATION_RE.test(body[k])) {
-        i = lineEnd;
-        continue;
-      }
-
-      // Word operators at end of line
-      if (k >= pos && /[A-Za-z]/.test(body[k])) {
-        let wordEnd = k + 1;
-        let wordStart = k;
-        while (wordStart > pos && /[A-Za-z]/.test(body[wordStart - 1]))
-          wordStart--;
-        const lastWord = body.slice(wordStart, wordEnd).toUpperCase();
-        if (WORD_CONTINUATION_OPS.has(lastWord)) {
-          i = lineEnd;
-          continue;
-        }
-      }
-
-      // Check start of next line for leading operators (e.g. RETURN 1\n+ 1)
-      let j = lineEnd;
-      while (j < body.length && (body[j] === " " || body[j] === "\t")) j++;
-      if (j < body.length && SYMBOL_CONTINUATION_RE.test(body[j])) {
-        i = lineEnd;
-        continue;
-      }
-
-      return lineEnd;
-    }
-
-    i++;
-  }
-
-  return i;
-}
-
 export const unreachableCodeRule: Rule = {
   id: "unreachableCode",
 
   check({
     text,
-    ignoreNoHeaders,
     indexer,
     doc,
     diagnosticsEnabled,
@@ -95,64 +24,48 @@ export const unreachableCodeRule: Rule = {
 
     const diags: vscode.Diagnostic[] = [];
 
-    for (const f of indexer.getFunctionRanges(doc.uri.fsPath)) {
-      const { body, bodyStartAbs } = getFunctionBodyText(f, text, doc);
+    const file = doc.uri.fsPath;
+    for (const f of indexer.getFunctionRanges(file)) {
+      const { tokens: T, stmts, start, end } = functionBody(text, f);
+      if (usesStructuralLabel(indexer, file, text, T, start, end)) continue;
+      const typed = f.returnType !== "VOID";
 
-      let depth = 0;
-      let returnSeenAtDepthZero = false;
-
-      TOKEN_RE.lastIndex = 0;
-      const tokenRe = TOKEN_RE;
-      let m: RegExpExecArray | null;
-
-      while ((m = tokenRe.exec(body))) {
-        const absPos = bodyStartAbs + m.index;
-        if (inSpan(absPos, ignoreNoHeaders)) continue;
-
-        const word = m[1].toUpperCase();
-
-        if (word === "END") {
-          if (depth === 0) break;
-          depth--;
-        } else if (BLOCK_OPENERS.has(word)) {
-          if (returnSeenAtDepthZero && depth === 0) {
-            const start = doc.positionAt(absPos);
-            const endLine = f.bodyRange.end.line;
-            diags.push(
-              diag(
-                new vscode.Range(start, new vscode.Position(endLine, 0)),
-                "Unreachable code after RETURN.",
-                vscode.DiagnosticSeverity.Warning,
+      const visit = (list: readonly Stmt[]) => {
+        let ret: Stmt | undefined;
+        for (const s of list) {
+          // A token no statement starts with is an error of its own (e.g.
+          // the `?abc?` of `RETURN ?abc?;`); what follows it is not judged.
+          if (ret && s.kind === "stray") break;
+          if (ret && s.kind !== "empty" && !isPlainDeclaration(s)) {
+            const last = list[list.length - 1];
+            const sameLine =
+              doc.positionAt(T[ret.start].start).line ===
+              doc.positionAt(T[s.start].start).line;
+            const d = hint(
+              new vscode.Range(
+                doc.positionAt(T[s.start].start),
+                doc.positionAt(T[last.end - 1].end),
               ),
+              !typed && ret.end === s.start && sameLine
+                ? "Unreachable code: RETURN in a function without a return type takes no value, so this never runs."
+                : "Unreachable code after RETURN.",
             );
+            d.tags = [vscode.DiagnosticTag.Unnecessary];
+            diags.push(d);
             break;
           }
-          depth++;
-        } else if (word === "RETURN") {
-          if (depth === 0) {
-            returnSeenAtDepthZero = true;
-            tokenRe.lastIndex = skipReturnStatement(
-              body,
-              m.index + m[0].length,
-            );
-          }
-        } else if (!STRUCTURAL_KEYWORDS.has(word)) {
-          if (returnSeenAtDepthZero && depth === 0) {
-            const start = doc.positionAt(absPos);
-            const endLine = f.bodyRange.end.line;
-            diags.push(
-              diag(
-                new vscode.Range(start, new vscode.Position(endLine, 0)),
-                "Unreachable code after RETURN.",
-                vscode.DiagnosticSeverity.Warning,
-              ),
-            );
-            break;
-          }
+          if (s.kind === "return") ret = s;
         }
-      }
+        for (const s of list) for (const b of s.blocks) visit(b);
+      };
+      visit(stmts);
     }
 
     return diags;
   },
 };
+
+/** A declaration without initializers, which runs no code. */
+function isPlainDeclaration(s: Stmt): boolean {
+  return s.kind === "decl" && s.names!.every((n) => n.init < 0);
+}

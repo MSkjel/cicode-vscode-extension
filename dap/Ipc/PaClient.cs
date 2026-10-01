@@ -36,7 +36,16 @@ namespace CicodeDebugAdapter
 
         protected NamedPipeClientStream _pipe;
         internal volatile bool Stopping;
+
+        // True only between a completed handshake and the next ConnectPipe/disconnect.
+        // Gates SendFrameLocked so heartbeat/ThreadPool senders can never write into
+        // a new connection's raw handshake bytes.
+        volatile bool _sendReady;
         protected readonly object SendLock = new object();
+
+        // Incremented per ConnectPipe. Reader/heartbeat threads capture it at start;
+        // a thread whose generation is stale must not touch state or report disconnect.
+        int _generation;
 
         uint _outSeqId;
         uint _recvSeqId;
@@ -63,10 +72,13 @@ namespace CicodeDebugAdapter
             }
         }
 
-        // Override to use PipeOptions.Asynchronous etc.
+        // PipeOptions for the main pipe. Asynchronous by default so a Close() during
+        // a pending BeginRead (ReadExact timeout) cancels the overlapped read instead
+        // of stranding a thread-pool thread blocked in ReadFile. Synchronous Read()
+        // in ReaderLoop works fine on an Asynchronous handle.
         protected virtual PipeOptions PipeOptions
         {
-            get { return PipeOptions.None; }
+            get { return PipeOptions.Asynchronous; }
         }
 
         // Override to seed extra type-name hints into _recvTypeNames before reading starts.
@@ -96,6 +108,8 @@ namespace CicodeDebugAdapter
 
         protected void ConnectPipe(string pipeName)
         {
+            _sendReady = false;
+            Interlocked.Increment(ref _generation);
             ResetState();
             _disconnected.Reset();
 
@@ -103,44 +117,65 @@ namespace CicodeDebugAdapter
             _pipe.Connect(5000);
             Logger.Ipc(GetType().Name + ": connected to " + pipeName);
 
-            // Phase 1b: version echo
-            PipeWrite(new byte[] { 0x00, 0x00 });
-            var tmp2 = new byte[2];
-            ReadExact(_pipe, tmp2, 2, 3000);
-
-            // Phase 2: GUID security challenge/response via callback pipe
-            var guid = Guid.NewGuid();
-            var cbPipe = new NamedPipeServerStream(
-                guid.ToString(),
-                PipeDirection.InOut,
-                1,
-                PipeTransmissionMode.Byte,
-                PipeOptions.Asynchronous
-            );
-            PipeWrite(guid.ToByteArray());
-            var iac = cbPipe.BeginWaitForConnection(null, null);
-            if (!iac.AsyncWaitHandle.WaitOne(5000))
+            NamedPipeServerStream cbPipe = null;
+            try
             {
+                // Phase 1: cipher suite {CanSecure, MustSecure}. We offer no encryption, so a
+                // server that requires it would drop the connection later.
+                PipeWrite(new byte[] { 0x00, 0x00 });
+                var suite = new byte[2];
+                ReadExact(_pipe, suite, 2, 3000);
+                Logger.Ipc(GetType().Name + ": server cipher suite " + suite[0] + "," + suite[1]);
+                if (suite[1] != 0)
+                    throw new Exception(
+                        "The runtime requires an encrypted IPC connection, which this debugger does not support."
+                    );
+
+                // Phase 2: GUID security challenge/response via callback pipe
+                var guid = Guid.NewGuid();
+                cbPipe = new NamedPipeServerStream(
+                    guid.ToString(),
+                    PipeDirection.InOut,
+                    1,
+                    PipeTransmissionMode.Byte,
+                    PipeOptions.Asynchronous
+                );
+                PipeWrite(guid.ToByteArray());
+                var iac = cbPipe.BeginWaitForConnection(null, null);
+                if (!iac.AsyncWaitHandle.WaitOne(5000))
+                    throw new Exception("GUID callback pipe timeout");
+                cbPipe.EndWaitForConnection(iac);
+                try
+                {
+                    ReadExact(cbPipe, new byte[16], 16, 3000);
+                }
+                catch { }
                 cbPipe.Close();
-                throw new Exception("GUID callback pipe timeout");
-            }
-            cbPipe.EndWaitForConnection(iac);
-            try
-            {
-                ReadExact(cbPipe, new byte[16], 16, 3000);
-            }
-            catch { }
-            cbPipe.Close();
 
-            // Phase 3: IdentifyMessage
-            byte[] identify = BuildIdentifyMessage();
-            PipeWrite(identify);
-            try
-            {
+                // Phase 3: IdentifyMessage. The server echoes it back; a timeout in
+                // ReadExact disposes _pipe, so failure here must abort the handshake
+                // rather than be swallowed (we would otherwise ride a closed pipe).
+                byte[] identify = BuildIdentifyMessage();
+                PipeWrite(identify);
                 ReadExact(_pipe, new byte[identify.Length], identify.Length, 5000);
             }
-            catch { }
+            catch
+            {
+                try
+                {
+                    if (cbPipe != null)
+                        cbPipe.Close();
+                }
+                catch { }
+                try
+                {
+                    _pipe.Close();
+                }
+                catch { }
+                throw;
+            }
             Logger.Ipc(GetType().Name + ": handshake done");
+            _sendReady = true;
 
             _recvTypeNames[ScadaVersion.HashHb] = "HeartbeatMessage";
             _recvTypeNames[ScadaVersion.HashAck] = "AcknowledgementMessage";
@@ -165,22 +200,38 @@ namespace CicodeDebugAdapter
             OnResetState();
         }
 
+        int CurrentGeneration
+        {
+            get { return Interlocked.CompareExchange(ref _generation, 0, 0); }
+        }
+
         void StartThreads()
         {
+            int gen = CurrentGeneration;
+            var pipe = _pipe;
+
+            // The server restarts the transport after 15 s without traffic; it sends a heartbeat
+            // every 5 s, so do we.
             new Thread(() =>
             {
                 Thread.Sleep(1000);
-                while (!Stopping)
+                while (!Stopping && gen == CurrentGeneration && !_disconnected.IsSet)
                 {
                     try
                     {
                         SendHeartbeat();
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        break;
+                        // Transient failures must not end the heartbeat for a live connection;
+                        // a dead pipe ends the reader, which ends this loop.
+                        Logger.Reader(GetType().Name + ": heartbeat failed: " + ex.Message);
                     }
-                    for (int i = 0; i < 50 && !Stopping; i++)
+                    for (
+                        int i = 0;
+                        i < 50 && !Stopping && gen == CurrentGeneration && !_disconnected.IsSet;
+                        i++
+                    )
                         Thread.Sleep(100);
                 }
             })
@@ -188,21 +239,22 @@ namespace CicodeDebugAdapter
                 IsBackground = true,
             }.Start();
 
-            new Thread(ReaderLoop) { IsBackground = true }.Start();
+            new Thread(() => ReaderLoop(pipe, gen)) { IsBackground = true }.Start();
         }
 
-        void ReaderLoop()
+        void ReaderLoop(NamedPipeClientStream pipe, int gen)
         {
             var recvBuf = new byte[65536];
             int recvOff = 0;
             var readBuf = new byte[4096];
+            bool fatal = false;
 
-            while (!Stopping)
+            while (!Stopping && !fatal)
             {
                 int n;
                 try
                 {
-                    n = _pipe.Read(readBuf, 0, readBuf.Length);
+                    n = pipe.Read(readBuf, 0, readBuf.Length);
                 }
                 catch (Exception ex)
                 {
@@ -244,17 +296,41 @@ namespace CicodeDebugAdapter
 
                     uint crc = CrcCompute(PA_SEED, recvBuf, consumed + PA_HDRLEN, payloadLen);
                     crc = CrcCompute(crc, recvBuf, consumed, 12);
+                    bool crcOk = crc == LE32(recvBuf, consumed + 12);
                     Logger.Pa(
                         string.Format(
                             "{0} frame seqId={1} payloadLen={2} CRC={3}",
                             GetType().Name,
                             frameSeq,
                             payloadLen,
-                            crc == LE32(recvBuf, consumed + 12) ? "OK" : "ERR"
+                            crcOk ? "OK" : "ERR"
                         )
                     );
+                    if (!crcOk)
+                    {
+                        // The server computes the CRC the same way, so a mismatch means a corrupt
+                        // frame.
+                        Logger.Warn(
+                            GetType().Name + ": CRC mismatch, frame seq=" + frameSeq + " len=" + payloadLen + " skipped"
+                        );
+                        consumed += PA_HDRLEN + payloadLen;
+                        continue;
+                    }
 
-                    ParseFramePayload(recvBuf, consumed + PA_HDRLEN, payloadLen, (int)frameSeq);
+                    if (gen != CurrentGeneration)
+                    {
+                        fatal = true;
+                        break;
+                    }
+                    try
+                    {
+                        ParseFramePayload(recvBuf, consumed + PA_HDRLEN, payloadLen, frameSeq);
+                    }
+                    catch (Exception ex)
+                    {
+                        // A malformed frame is skipped; one bad frame must not end the session.
+                        Logger.Warn(GetType().Name + ": frame seq=" + frameSeq + " dispatch error: " + ex);
+                    }
                     consumed += PA_HDRLEN + payloadLen;
                 }
 
@@ -266,31 +342,40 @@ namespace CicodeDebugAdapter
             }
 
             Logger.Reader(GetType().Name + ": exited");
+            if (gen != CurrentGeneration)
+            {
+                Logger.Reader(GetType().Name + ": stale reader, skipping disconnect");
+                return;
+            }
             OnDisconnected();
         }
 
-        void ParseFramePayload(byte[] buf, int start, int len, int frameSeqId)
+        void ParseFramePayload(byte[] buf, int start, int len, uint frameSeqId)
         {
             int off = start;
             int end = start + len;
-            bool hasNonAck = false;
+            // Every non-ACK message in a frame consumes one sequence id, starting at the frame's
+            // seqId; type declarations and ACKs do not.
+            uint messages = 0;
+            bool complete = true;
 
             while (off < end)
             {
-                int offBefore = off;
-                if (!ParseOneMessage(buf, ref off, end))
+                bool isAck;
+                if (!ParseOneMessage(buf, ref off, end, out isAck))
+                {
+                    complete = false;
                     break;
-                uint hash = LE32(buf, offBefore);
-                string tn;
-                if (!_recvTypeNames.TryGetValue(hash, out tn))
-                    tn = "";
-                if (!tn.Contains("AcknowledgementMessage"))
-                    hasNonAck = true;
+                }
+                if (!isAck)
+                    messages++;
             }
+            if (!complete && messages == 0)
+                messages = 1; // unparseable first message: still acknowledge the frame
 
-            if (hasNonAck && frameSeqId > 0)
+            if (messages > 0 && frameSeqId > 0)
             {
-                _recvSeqId = (uint)frameSeqId;
+                _recvSeqId = frameSeqId + messages - 1;
                 try
                 {
                     SendAck(_recvSeqId);
@@ -299,8 +384,9 @@ namespace CicodeDebugAdapter
             }
         }
 
-        bool ParseOneMessage(byte[] buf, ref int off, int end)
+        bool ParseOneMessage(byte[] buf, ref int off, int end, out bool isAck)
         {
+            isAck = false;
             if (end - off < 4)
                 return false;
             uint hash = LE32(buf, off);
@@ -308,6 +394,7 @@ namespace CicodeDebugAdapter
 
             if (!_recvTypeHashes.Contains(hash))
             {
+                // First use of a type: its name follows. This declaration is not a message.
                 int byteLen = 0,
                     shift = 0;
                 while (off < end)
@@ -347,6 +434,7 @@ namespace CicodeDebugAdapter
                 return true;
             if (typeName.Contains("AcknowledgementMessage"))
             {
+                isAck = true;
                 if (end - off < 4)
                     return false;
                 off += 4;
@@ -357,23 +445,17 @@ namespace CicodeDebugAdapter
 
         void SendHeartbeat()
         {
-            lock (SendLock)
-            {
-                _outSeqId++;
-                if (_outSeqId == 0)
-                    _outSeqId = 1;
-                SendFrameLocked(
-                    _outSeqId,
-                    BuildMsgPayload(ScadaVersion.HashHb, ScadaVersion.TnHb, ref _sentHbType, null)
-                );
-            }
+            SendMessage(ScadaVersion.HashHb, ScadaVersion.TnHb, ref _sentHbType, null);
         }
 
         void SendAck(uint ackSeqId)
         {
             lock (SendLock)
             {
+                // The server drops the session on an ACK it already has, so never repeat one.
                 if (ackSeqId == _ackedSeqId)
+                    return;
+                if (!_sendReady)
                     return;
                 _ackedSeqId = ackSeqId;
                 SendFrameLocked(
@@ -388,17 +470,29 @@ namespace CicodeDebugAdapter
             }
         }
 
-        // Increments _outSeqId and sends. Caller must hold SendLock.
-        protected uint NextSeqId()
+        /// <summary>
+        /// Send one message in its own frame. The server requires the frame sequence ids to be
+        /// strictly consecutive (a gap or repeat drops the session), so the id is only taken
+        /// once the connection is known to be ready.
+        /// </summary>
+        protected void SendMessage(uint hash, string typeName, ref bool typeSent, byte[] body)
         {
-            _outSeqId++;
-            if (_outSeqId == 0)
-                _outSeqId = 1;
-            return _outSeqId;
+            lock (SendLock)
+            {
+                if (!_sendReady)
+                    throw new InvalidOperationException(GetType().Name + ": send while not connected");
+                _outSeqId++;
+                if (_outSeqId == 0)
+                    _outSeqId = 1;
+                SendFrameLocked(_outSeqId, BuildMsgPayload(hash, typeName, ref typeSent, body));
+            }
         }
 
+        // Caller must hold SendLock.
         protected void SendFrameLocked(uint seqId, byte[] payload)
         {
+            if (!_sendReady)
+                throw new InvalidOperationException(GetType().Name + ": send while not connected");
             var frame = new byte[PA_HDRLEN + payload.Length];
             frame[0] = 0x01;
             frame[1] = 0x02;
@@ -495,9 +589,21 @@ namespace CicodeDebugAdapter
             var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
             while (got < n)
             {
-                if (DateTime.UtcNow > deadline)
+                int remaining = (int)(deadline - DateTime.UtcNow).TotalMilliseconds;
+                if (remaining <= 0)
                     throw new TimeoutException("ReadExact timeout (got " + got + "/" + n + ")");
-                int r = s.Read(buf, got, n - got);
+                IAsyncResult ar = s.BeginRead(buf, got, n - got, null, null);
+                if (!ar.AsyncWaitHandle.WaitOne(remaining))
+                {
+                    // Close so the pending read completes instead of blocking forever.
+                    try
+                    {
+                        s.Close();
+                    }
+                    catch { }
+                    throw new TimeoutException("ReadExact timeout (got " + got + "/" + n + ")");
+                }
+                int r = s.EndRead(ar);
                 if (r == 0)
                     throw new EndOfStreamException("EOF");
                 got += r;
